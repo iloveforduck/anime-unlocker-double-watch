@@ -16,6 +16,15 @@
     let minimizedBtn = null;
     let hideTimer = null;
 
+    // ===== وضعیت دابل‌واچ (همگام‌سازی دونفره) =====
+    const dw = {
+        active: false,      // حالت دابل‌واچ روشن است؟
+        role: null,         // 'host' | 'guest'
+        state: 'off',       // off | waiting | paired | disconnected
+        suppress: false,    // وقتی برای اعمال دستور از بیرون، جلوی پخش مجدد رویداد را می‌گیرد
+        lastT: 0
+    };
+
     const ICON_URL = document.querySelector('script[src*="icon"]') ?
         document.querySelector('script[src*="icon"]').src : '';
 
@@ -32,6 +41,130 @@
     // ===== تشخیص فول‌اسکرین =====
     function isFullscreen() {
         return !!(document.fullscreenElement || document.webkitFullscreenElement);
+    }
+
+    // ===== ارتباط دابل‌واچ با double-watch.js (ISOLATED world) =====
+    function toExt(detail) {
+        document.dispatchEvent(new CustomEvent('DW_EXT_MSG', { detail }));
+    }
+
+    // رویدادها فقط از طریق این تابع ارسال می‌شوند؛ dw.suppress جلوی حلقه را می‌گیرد
+    function emitPlayerEvent(kind, extra = {}) {
+        if (!dw.active || dw.suppress) return;
+        const payload = Object.assign({ kind }, extra);
+        if (video) {
+            payload.currentTime = video.currentTime;
+            payload.duration = video.duration || 0;
+            payload.playing = !video.paused && !video.ended;
+        }
+        document.dispatchEvent(new CustomEvent('DW_EVENT', { detail: payload }));
+    }
+
+    // ---------- اعمال دستورات طرف مقابل (مهمان) ----------
+    function dwApplyRemoteState(playing, currentTime) {
+        if (!video) return;
+        dw.suppress = true;
+        try {
+            if (typeof currentTime === 'number' && isFinite(currentTime)) {
+                if (Math.abs(video.currentTime - currentTime) > 1.5) video.currentTime = currentTime;
+            }
+            if (playing) {
+                removeLockOverlay();
+                video.muted = savedMuted;
+                video.volume = savedVolume;
+                video.play().catch(() => {});
+            } else {
+                originalPause ? originalPause() : video.pause();
+            }
+            fixPlayerButtons();
+        } finally {
+            setTimeout(() => { dw.suppress = false; }, 800);
+        }
+    }
+
+    function dwHandleMsg(e) {
+        const m = (e && e.detail) || {};
+        switch (m.action) {
+            case 'DW_STATE':
+                dw.state = m.state || 'off';
+                dw.role = m.role || null;
+                dw.active = (dw.state !== 'off' && dw.state !== 'disconnected');
+                updateUI();
+                if (dw.state === 'paired' && dw.role === 'host') {
+                    // میزبان: ارسال وضعیت اولیه به مهمان تازه‌وارد
+                    emitPlayerEvent('state');
+                }
+                break;
+            case 'DW_REQUEST_STATE':
+                if (video) emitPlayerEvent('state');
+                break;
+            case 'DW_APPLY_STATE':
+                dwApplyRemoteState(m.playing, m.currentTime);
+                break;
+            case 'DW_CTRL':
+                if (m.cmd === 'play') dwApplyRemoteState(true, m.t);
+                else if (m.cmd === 'pause') dwApplyRemoteState(false, null);
+                else if (m.cmd === 'seek' && video) dwApplyRemoteState(!video.paused, m.t);
+                break;
+            case 'DW_RESYNC':
+                // هر دو نفر روی نقطهٔ میزبان قفل می‌شوند
+                if (dw.role === 'host') {
+                    if (video) emitPlayerEvent('state');
+                } else {
+                    dwApplyRemoteState(true, m.t);
+                }
+                break;
+            case 'DW_LEAVE':
+                dw.active = false;
+                dw.state = 'off';
+                dw.role = null;
+                updateUI();
+                break;
+        }
+    }
+    document.addEventListener('DW_EXT_MSG', dwHandleMsg);
+
+    // ---------- اتصال رویدادهای ویدیو به دابل‌واچ ----------
+    let dwVideoEl = null;
+    const dwVideoHandlers = {
+        play: () => emitPlayerEvent('play'),
+        pause: () => emitPlayerEvent('pause'),
+        seeked: () => emitPlayerEvent('seek'),
+        ended: () => emitPlayerEvent('ended')
+    };
+
+    function bindDWVideoEvents() {
+        if (dwVideoEl === video) return;
+        unbindDWVideoEvents();
+        if (!video) return;
+        dwVideoEl = video;
+        for (const ev in dwVideoHandlers) video.addEventListener(ev, dwVideoHandlers[ev]);
+    }
+    function unbindDWVideoEvents() {
+        if (!dwVideoEl) return;
+        for (const ev in dwVideoHandlers) dwVideoEl.removeEventListener(ev, dwVideoHandlers[ev]);
+        dwVideoEl = null;
+    }
+
+    // ---------- دکمه و بخش دابل‌واچ در پنل ----------
+    function dwToggleUI() {
+        const section = document.getElementById('adv-dw-section');
+        if (!section) return;
+        const visible = section.style.display !== 'none';
+        if (visible && !dw.active) {
+            section.style.display = 'none';
+        } else {
+            section.style.display = 'block';
+            if (!dw.active) toExt({ action: 'DW_TOGGLE' });
+        }
+    }
+
+    // ساخت بخش دابل‌واچ داخل پنل کنترل
+    function buildDWSection(parent) {
+        const sec = document.createElement('div');
+        sec.id = 'adv-dw-section';
+        sec.style.cssText = `display:none;margin-bottom:14px;padding:10px 12px;background:rgba(189,147,249,0.06);border:1px solid rgba(189,147,249,0.15);border-radius:10px;`;
+        parent.appendChild(sec);
     }
 
     // ===== تشخیص قفل =====
@@ -260,6 +393,7 @@
 
         video = currentVideo;
         removeLockOverlay();
+        bindDWVideoEvents();
 
         savedVolume = video.volume;
         savedMuted = video.muted;
@@ -319,6 +453,7 @@
     // ===== ریست برای ویدیوی جدید =====
     function resetForNewVideo() {
         console.log('🔄 ریست برای ویدیوی جدید');
+        unbindDWVideoEvents();
         isActive = false;
         originalPause = null;
         originalPlay = null;
@@ -329,7 +464,11 @@
     // ===== ساخت پنل کنترل =====
     function createControlPanel() {
         const oldPanel = document.getElementById('advanced-control-panel');
-        if (oldPanel) oldPanel.remove();
+        if (oldPanel) {
+            // اگر دابل‌واچ فعال است، پنل قبلی را حذف نکن — فقط بروزرسانی ظاهری کافیست
+            if (dw.active && document.getElementById('adv-dw-section')) return;
+            oldPanel.remove();
+        }
 
         controlPanel = document.createElement('div');
         controlPanel.id = 'advanced-control-panel';
@@ -380,16 +519,21 @@
         btnRow.style.cssText = `display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:14px;`;
 
         [{ id: 'adv-play-btn', icon: '▶', label: 'پخش', color: '#50fa7b' },
-         { id: 'adv-reset-btn', icon: '🔄', label: 'ریست', color: '#6272a4' }].forEach(btn => {
+         { id: 'adv-reset-btn', icon: '🔄', label: 'ریست', color: '#6272a4' },
+         { id: 'adv-dw-btn', icon: '👥', label: 'دابل‌واچ', color: '#bd93f9' }].forEach(btn => {
             const el = document.createElement('button');
             el.id = btn.id;
             el.innerHTML = `${btn.icon} ${btn.label}`;
             el.style.cssText = `padding:8px 0;border:none;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;background:rgba(255,255,255,0.06);color:white;transition:all 0.2s ease;`;
             el.onmouseover = () => { el.style.background = btn.color; el.style.color = '#1a1a2e'; };
             el.onmouseout = () => { el.style.background = 'rgba(255,255,255,0.06)'; el.style.color = 'white'; };
+            if (btn.id === 'adv-dw-btn') el.onclick = () => dwToggleUI();
             btnRow.appendChild(el);
         });
         controlPanel.appendChild(btnRow);
+
+        // ===== بخش دابل‌واچ (بدنهٔ UI توسط double-watch.js پر می‌شود) =====
+        buildDWSection(controlPanel);
 
         const volumeContainer = document.createElement('div');
         volumeContainer.style.cssText = `margin-bottom:14px;padding:10px 12px;background:rgba(255,255,255,0.04);border-radius:10px;`;
@@ -491,6 +635,13 @@
         status.textContent = '⏹ وضعیت: غیرفعال';
         controlPanel.appendChild(status);
 
+        // ===== نوار وضعیت دابل‌واچ (زیرنویس حالت دونفره) =====
+        const dwStatusLine = document.createElement('div');
+        dwStatusLine.id = 'dw-inline-status';
+        dwStatusLine.style.cssText = `text-align:center;font-size:11px;color:#bd93f9;padding:6px 6px 0;font-weight:700;min-height:0;`;
+        dwStatusLine.textContent = '';
+        controlPanel.appendChild(dwStatusLine);
+
         document.body.appendChild(controlPanel);
 
         toggleBtn.onclick = () => isActive ? deactivate() : activate();
@@ -518,6 +669,7 @@
 
         makeDraggable(controlPanel, header, false);
         updateUI();
+        bindDWVideoEvents(); // اتصال مجدد رویدادها + بازگرداندن وضعیت دابل‌واچ
     }
 
     // ===== بروزرسانی UI =====
@@ -527,7 +679,7 @@
         const panel = document.getElementById('advanced-control-panel');
 
         if (toggleBtn) {
-            toggleBtn.textContent = '⏸ مکث';
+            toggleBtn.textContent = dw.role === 'guest' ? '⏸ مکث (کنترل با دوست)' : '⏸ مکث';
             if (isActive) {
                 toggleBtn.style.background = 'linear-gradient(135deg,#ff5555,#ff6b6b)';
                 toggleBtn.style.color = 'white';
@@ -542,8 +694,45 @@
             status.style.color = isActive ? '#50fa7b' : '#ff5555';
         }
 
+        // ===== نوار وضعیت دابل‌واچ (همیشه زیر پنل دیده می‌شود) =====
+        const dwLine = document.getElementById('dw-inline-status');
+        if (dwLine) {
+            let txt = '', color = '#bd93f9', bg = 'transparent';
+            switch (dw.state) {
+                case 'waiting':
+                    txt = dw.role === 'host' ? '👥 دابل‌واچ: منتظر ورود دوست...' : '👥 دابل‌واچ: در انتظار اتصال...';
+                    color = '#ffb86c'; break;
+                case 'paired':
+                    txt = dw.role === 'host'
+                        ? '👥 دابل‌واچ فعال — شما کنترل پخش را دارید 🎮'
+                        : '👥 دابل‌واچ فعال — ویدیو با دوستتان همگام است ✓';
+                    color = '#50fa7b'; break;
+                case 'disconnected':
+                    txt = '👥 دابل‌واچ: قطع شده (دوباره وصل شوید)';
+                    color = '#ff5555'; break;
+            }
+            dwLine.textContent = txt;
+            dwLine.style.color = color;
+            if (txt) {
+                dwLine.style.background = 'rgba(189,147,249,0.08)';
+                dwLine.style.borderRadius = '6px';
+                dwLine.style.padding = '6px';
+                dwLine.style.marginTop = '6px';
+            } else {
+                dwLine.style.background = 'transparent';
+            }
+        }
+
         if (panel) {
             panel.style.borderColor = isActive ? 'rgba(80,250,123,0.3)' : 'rgba(255,255,255,0.06)';
+        }
+
+        // ===== هالهٔ دکمه دابل‌واچ بر اساس وضعیت اتصال =====
+        const dwBtn = document.getElementById('adv-dw-btn');
+        if (dwBtn) {
+            dwBtn.style.boxShadow = (dw.state === 'paired')
+                ? '0 0 12px rgba(189,147,249,0.8)'
+                : (dw.state === 'waiting' ? '0 0 12px rgba(255,184,108,0.8)' : 'none');
         }
     }
 
