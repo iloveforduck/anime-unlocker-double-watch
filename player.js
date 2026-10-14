@@ -61,6 +61,8 @@
   let lastDriftCheck = 0;
   let connectedAt = 0;
   let remoteState = null;       // آخرین وضعیت دریافتی از هم‌تابی (برای drift)
+  let lastLocalAction = 0;      // زمان آخرین کنترل محلی (برای پنجرهٔ محافظت در برابر echo)
+  let lastRemoteAt = 0;         // زمان آخرین اعمال پیام راه دور
 
   // ---------- ذخیره/بازیابی تنظیمات ----------
   function loadServerPrefs() {
@@ -79,6 +81,7 @@
   // ---------- ارسال رویداد همگام‌سازی (هر سه لایه) ----------
   function sendState(type, data) {
     const msg = Object.assign({ type, code: roomCode, t: Date.now(), from: location.href + '#' + (isHost ? 'H' : 'G') }, data || {});
+    if (['play', 'pause', 'seek', 'volume'].includes(type)) lastLocalAction = Date.now();
     try { if (bc) bc.postMessage(msg); } catch {}
     try { if (ws && ws.readyState === 1) ws.send(JSON.stringify(Object.assign({ room: roomCode }, msg))); } catch {}
     try { chrome.storage.local.set({ ['dw_last_' + roomCode]: msg }); } catch {}
@@ -99,6 +102,9 @@
   function handleRemote(m) {
     if (!m || !m.type) return;
     if (m.code && m.code !== roomCode) return;
+    // حذف echo: پیام‌های خودمان که از BC/storage/سرور برمی‌گردند نادیده گرفته می‌شوند
+    const selfTag = location.href + '#' + (isHost ? 'H' : 'G');
+    if (m.from === selfTag) return;
 
     switch (m.type) {
       case 'hello':
@@ -130,7 +136,11 @@
   }
 
   function applyRemote(m) {
+    // پنجرهٔ محافظت: اگر کاربر همین الان کنترل محلی انجام داده، پیام‌های
+    // state راه دور تا ۱.۵ ثانیه نادیده گرفته می‌شوند (جلوگیری از جنگ pause/play)
+    if ((m.type === 'state' || m.type === 'seek') && Date.now() - lastLocalAction < 1500) return;
     applyingRemote = true;
+    lastRemoteAt = Date.now();
     try {
       if (typeof m.time === 'number' && isFinite(m.time)) {
         remoteState = { time: m.time, playing: !!m.playing, at: Date.now() };
@@ -145,6 +155,17 @@
       }
       if (m.playing === true && video.paused) { video.play().catch(() => {}); }
       if (m.playing === false && !video.paused) { video.pause(); }
+      // اگر پیام راه دور شامل src معتبر است و با ویدیوی فعلی فرق دارد، آن را پخش کن
+      if (typeof m.src === 'string' && /^https?:\/\//i.test(m.src)) {
+        const cur = (video.currentSrc || video.src || '').split('#')[0];
+        if (cur !== m.src.split('#')[0]) {
+          try {
+            video.src = m.src;
+            try { localStorage.setItem('dw_src_' + roomCode, m.src); } catch {}
+            setStatus('📥 ویدیوی هم‌تابی بارگذاری شد.', '#50fa7b');
+          } catch {}
+        }
+      }
       updatePeerUI();
       if (m.type === 'state' || m.type === 'seek') setStatus('🔄 همگام با هم‌تابی', '#50fa7b');
     } finally {
@@ -225,6 +246,9 @@
 
   // ---------- ورود/ساخت اتاق ----------
   function enterRoom(code, host, src) {
+    // اگر قبلاً در اتاقی بودیم، اول تمیز خارج شو (کانال‌های تکراری بسته شوند)
+    if (roomCode) { try { sendState('bye', {}); } catch {} closeBC(); closeWS(); }
+    peerPresent = false; remoteState = null; applyingRemote = false;
     roomCode = String(code).toUpperCase();
     isHost = !!host;
     if (src) {
@@ -234,6 +258,7 @@
     } else {
       let saved = null;
       try { saved = localStorage.getItem('dw_src_' + roomCode); } catch {}
+      if (!saved) { try { chrome.storage.local.get(['dw_src_' + roomCode], (r) => { if (r && r['dw_src_' + roomCode] && !video.src) { video.src = r['dw_src_' + roomCode]; } }); } catch {} }
       if (saved) video.src = saved;
     }
     ui.connect.style.display = 'none';
@@ -255,13 +280,17 @@
     // broadcast state دوره‌ای برای همگام ماندن + اصلاح drift
     setInterval(() => {
       if (!roomCode) return;
-      if (!video.paused && !applyingRemote) sendState('state', currentSyncPayload());
+      const playing = !video.paused && !video.ended;
+      if (playing && !applyingRemote) sendState('state', currentSyncPayload());
       // تشخیص drift: اگر زمان محلی با پیش‌بینی وضعیت هم‌تابی بیش از ۳ ثانیه
       // اختلاف داشت، خود را با آن قفل کن (حتی اگر پیام تازه‌ای نرسیده باشد)
       if (peerPresent && remoteState && !applyingRemote && Date.now() - remoteState.at < 30000) {
         const predicted = remoteState.playing ? remoteState.time + (Date.now() - remoteState.at) / 1000 : remoteState.time;
         if (Math.abs((video.currentTime || 0) - predicted) > 3) {
           applyRemote({ type: 'state', time: predicted, playing: remoteState.playing });
+        } else if (remoteState.playing !== playing && Date.now() - lastLocalAction > 2000 && Date.now() - lastRemoteAt > 2000) {
+          // حالت play/pause قفل شده — فقط وقتی کاربر اخیراً دستی کنترل نکرده اصلاح شود
+          applyRemote({ type: 'state', time: video.currentTime, playing: remoteState.playing });
         }
       }
     }, 2000);
