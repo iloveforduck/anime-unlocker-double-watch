@@ -1,0 +1,3 @@
+name = "dw-sync"
+main = "dw-sync-worker.js"
+compatibility_date = "2026-10-01"
