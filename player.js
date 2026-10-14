@@ -29,7 +29,7 @@
     try {
       const u = new URL(httpUrl);
       u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:';
-      return u.toString().replace(/\/$/, '') + '/room';
+      return u.toString().replace(/\/$/, '') + '/sync'; // سرور Worker: مسیر /sync
     } catch { return null; }
   }
 
@@ -60,12 +60,16 @@
   let wsTimer = null;
   let lastDriftCheck = 0;
   let connectedAt = 0;
+  let remoteState = null;       // آخرین وضعیت دریافتی از هم‌تابی (برای drift)
 
   // ---------- ذخیره/بازیابی تنظیمات ----------
-  try { chrome.storage.local.get(['dw_server_url'], (r) => {
-    if (r && r.dw_server_url && !ui.serverInput.value) ui.serverInput.value = r.dw_server_url;
-  }); } catch {}
-  try { if (!ui.serverInput.value) ui.serverInput.value = localStorage.getItem('dw_server_url') || ''; } catch {}
+  function loadServerPrefs() {
+    try { chrome.storage.local.get(['dw_server_url'], (r) => {
+      if (r && r.dw_server_url && !ui.serverInput.value) ui.serverInput.value = r.dw_server_url;
+    }); } catch {}
+    try { if (!ui.serverInput.value) ui.serverInput.value = localStorage.getItem('dw_server_url') || ''; } catch {}
+  }
+  loadServerPrefs();
 
   function saveServer(u) {
     try { chrome.storage.local.set({ dw_server_url: u }); } catch {}
@@ -128,6 +132,9 @@
   function applyRemote(m) {
     applyingRemote = true;
     try {
+      if (typeof m.time === 'number' && isFinite(m.time)) {
+        remoteState = { time: m.time, playing: !!m.playing, at: Date.now() };
+      }
       if (typeof m.vol === 'number') { video.volume = Math.min(1, Math.max(0, m.vol)); }
       if (typeof m.muted === 'boolean') video.muted = m.muted;
       if (typeof m.time === 'number' && isFinite(m.time)) {
@@ -163,16 +170,32 @@
     try {
       ws = new WebSocket(wurl);
     } catch { ws = null; return; }
+    let registered = false;
     ws.onopen = () => {
+      registered = false;
+      // حالت register: عضویت مستقیم با کد اتاق (پشتیبانی در dw-sync-worker.js)
       try { ws.send(JSON.stringify({ type: 'register', room: code, role: isHost ? 'host' : 'guest' })); } catch {}
-      setStatus('🌐 سرور همگام‌سازی متصل است.', '#50fa7b');
+      // پشتیبان: اگر سرور نسخهٔ قدیمی باشد و register را نشناسد، بعد از
+      // ۱.۵ ثانیه با پروتکل create/join تلاش می‌کنیم
+      setTimeout(() => {
+        if (registered || !ws || ws.readyState !== 1) return;
+        try {
+          if (isHost) ws.send(JSON.stringify({ type: 'create', code, pwd: '' }));
+          else ws.send(JSON.stringify({ type: 'join', code, pwd: '' }));
+        } catch {}
+      }, 1500);
+      setStatus('🌐 در حال اتصال به سرور همگام‌سازی...', '#8be9fd');
     };
     ws.onmessage = (e) => {
       let m = null;
       try { m = JSON.parse(e.data); } catch { return; }
       if (m && m.room && m.room !== code) return;
-      if (m && (m.type === 'peer_joined')) { peerPresent = true; updatePeerUI(); sendState('state', currentSyncPayload()); }
+      if (m && m.type === 'registered') { registered = true; setStatus('🌐 سرور همگام‌سازی متصل است.', '#50fa7b'); }
+      if (m && (m.type === 'created' || m.type === 'joined')) { registered = true; setStatus('🌐 سرور همگام‌سازی متصل است.', '#50fa7b'); }
+      if (m && (m.type === 'paired' || m.type === 'peer_joined')) { peerPresent = true; updatePeerUI(); sendState('state', currentSyncPayload()); }
       if (m && (m.type === 'peer_left')) { peerPresent = false; updatePeerUI(); }
+      // پروتکل قدیمی: پیام relay → داخلش data داریم
+      if (m && m.type === 'relay' && m.data) { handleRemote(Object.assign({}, m.data, { code })); return; }
       handleRemote(m);
     };
     ws.onclose = () => { ws = null; scheduleWSRetry(code); };
@@ -229,13 +252,17 @@
     const share = location.origin + location.pathname + '#join=' + roomCode;
     ui.shareLink.value = share;
 
-    // broadcast state دوره‌ای برای همگام ماندن
+    // broadcast state دوره‌ای برای همگام ماندن + اصلاح drift
     setInterval(() => {
       if (!roomCode) return;
       if (!video.paused && !applyingRemote) sendState('state', currentSyncPayload());
-      // تشخیص drift: بیش از ۳ ثانیه اختلاف → اصلاح
-      if (!video.paused && peerPresent && Date.now() - lastDriftCheck > 5000) {
-        lastDriftCheck = Date.now();
+      // تشخیص drift: اگر زمان محلی با پیش‌بینی وضعیت هم‌تابی بیش از ۳ ثانیه
+      // اختلاف داشت، خود را با آن قفل کن (حتی اگر پیام تازه‌ای نرسیده باشد)
+      if (peerPresent && remoteState && !applyingRemote && Date.now() - remoteState.at < 30000) {
+        const predicted = remoteState.playing ? remoteState.time + (Date.now() - remoteState.at) / 1000 : remoteState.time;
+        if (Math.abs((video.currentTime || 0) - predicted) > 3) {
+          applyRemote({ type: 'state', time: predicted, playing: remoteState.playing });
+        }
       }
     }, 2000);
 
@@ -296,6 +323,8 @@
     if (!/^https?:\/\//i.test(src)) { setStatus('❌ برای میزبانی، آدرس مستقیم فایل ویدیو (mp4/webm) را وارد کنید.', '#ff5555'); return; }
     const code = validCode(ui.codeInput.value) ? ui.codeInput.value.trim().toUpperCase() : genCode();
     ui.codeInput.value = code;
+    const srv = normServer(ui.serverInput.value);
+    if (srv) saveServer(srv);
     enterRoom(code, true, src);
   });
   ui.joinBtn.addEventListener('click', () => {
@@ -314,13 +343,15 @@
 
   // ---------- هاش خودکار (#join=CODE&src=... از تب سایت/لینک دعوت) ----------
   function checkHash() {
+    if (roomCode) return; // قبلاً وارد اتاقی شده‌ایم — تکرار نکن
     const h = location.hash || '';
     const m = /(?:^#|&)join=([A-Z0-9]{4,8})/i.exec(h);
     const sm = /(?:^#|&)src=([^&]+)/.exec(h);
     if (sm) { try { ui.srcInput.value = decodeURIComponent(sm[1]); } catch {} }
     if (m) {
       ui.codeInput.value = m[1].toUpperCase();
-      if (!roomCode) ui.joinBtn.click();
+      loadServerPrefs(); // سرور ذخیره‌شده ممکن است تازه تنظیم شده باشد
+      ui.joinBtn.click();
     }
   }
   window.addEventListener('hashchange', checkHash);

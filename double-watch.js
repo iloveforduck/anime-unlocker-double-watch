@@ -103,16 +103,12 @@
                 buildUI();
                 if (!connected && !tryAutoJoin()) openCreateDialog();
                 break;
-            case 'DW_NEW_TAB': // میزبان: صفحهٔ ویدیو در تب جدید باز شود (دابل‌واچ)
+            case 'DW_NEW_TAB': // میزبان: پلیر خود اکستنشن در تب جدید باز شود (دابل‌واچ)
                 try { sessionStorage.setItem('dw_host_video_href', location.href); } catch {}
-                if (!serverBase()) {
-                    // سرور تنظیم نشده → به‌جای تب سایت، «صفحهٔ اتصال» خود اکستنشن باز شود
-                    openConnectPage();
-                    setStatus('🧲 ابتدا از صفحهٔ اتصالِ باز شده، آدرس سرور را وارد کنید', '#ffb86c');
-                    break;
-                }
-                openInNewTab(location.href);
-                setStatus('🗂️ صفحهٔ ویدیو در تب جدید باز شد (پلیر خود اکستنشن)...', '#8be9fd');
+                // همیشه تب داخلی player.html — بدون نیاز به سرور/URL صفحهٔ سایت
+                openConnectPage();
+                pushSrcToPlayers();
+                setStatus('🧲 تب پلیر اکستنشن باز شد — با کد ' + (roomCode || 'اتاق') + ' وصل شوید...', '#8be9fd');
                 break;
             case 'DW_JOIN_INFO': // فقط مهمان: اطلاعات پلیر محلی برای صفحه Join
                 if (typeof m.currentTime === 'number') lastKnownTs = m.currentTime;

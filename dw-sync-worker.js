@@ -149,7 +149,18 @@ export default {
   async fetch(req, env, ctx) {
     const url = new URL(req.url);
 
-    if (url.pathname !== '/sync') {
+    // مسیر WebSocket: هم /sync (نسخه‌های قدیمی اکستنشن) و هم /room (پلیر جدید)
+    if (url.pathname === '/sync' || url.pathname === '/room') {
+      if (req.headers.get('Upgrade') !== 'websocket') {
+        return new Response('Expected WebSocket upgrade', { status: 426 });
+      }
+      const pair = new WebSocketPair();
+      const [client, server] = Object.values(pair);
+      ctx.waitUntil(handle(server));
+      return new Response(null, { status: 101, webSocket: client });
+    }
+
+    if (true) {
       // کد اتاق می‌تواند در هش (#CODE — لینک‌های قدیمی) یا پارامتر ?c= باشد
       let code = '';
       const h = (url.hash || '').replace(/^#/, '');
@@ -174,15 +185,6 @@ export default {
         headers: { 'Content-Type': 'text/html; charset=utf-8' }
       });
     }
-
-    if (req.headers.get('Upgrade') !== 'websocket') {
-      return new Response('Expected WebSocket upgrade', { status: 426 });
-    }
-
-    const pair = new WebSocketPair();
-    const [client, server] = Object.values(pair);
-    ctx.waitUntil(handle(server));
-    return new Response(null, { status: 101, webSocket: client });
   }
 };
 
@@ -209,6 +211,44 @@ function handle(ws) {
     if (r) r.lastTs = Date.now();
 
     switch (msg.type) {
+
+      case 'register': {
+        // حالت «اتصال مستقیم» (پلیر اکستنشن player.html): هر دو طرف فقط با
+        // کد اتاق عضو می‌شوند؛ نقش از خود پیام می‌آید و سرور پیام‌های type
+        // دار (state/play/pause/seek/volume/hello/bye) را برای بقیهٔ اعضای
+        // اتاق فوروارد می‌کند. اگر اتاق خالی بود، اولین عضو host می‌شود.
+        const code = String(msg.room || msg.code || '').toUpperCase().trim();
+        if (!/^[A-Z0-9]{4,8}$/.test(code)) return;
+        if (room === code) break; // قبلاً عضو همین اتاق هستیم
+        if (room) handoff();      // تغییر اتاق — اول از اتاق قبلی خارج شو
+        let r = rooms.get(code);
+        if (!r) {
+          r = { host: null, guest: null, pwd: '', lastTs: Date.now() };
+          rooms.set(code, r);
+        }
+        const wantedRole = msg.role === 'guest' ? 'guest' : 'host';
+        const other = wantedRole === 'host' ? r.guest : r.host;
+        if (wantedRole === 'host' && r.host && r.host !== ws) {
+          // میزبان دیگری هست — ما مهمان می‌شویم
+          if (r.guest && r.guest !== ws) { try { r.guest.close(); } catch {} }
+          r.guest = ws;
+        } else if (wantedRole === 'guest' && r.guest && r.guest !== ws) {
+          // مهمان دیگری هست — جای او را نمی‌گیریم مگر اینکه اتصالش مرده باشد
+          if (r.host && r.host !== ws) { r.guest = ws; }
+          else { try { r.guest.close(); } catch {} r.guest = ws; }
+        } else if (wantedRole === 'host') {
+          if (r.host && r.host !== ws) { try { r.host.close(); } catch {} }
+          r.host = ws;
+        } else {
+          r.guest = ws;
+        }
+        room = code; role = wantedRole;
+        r.lastTs = Date.now();
+        send(ws, { type: 'registered', room: code, role });
+        const peerSock = role === 'host' ? r.guest : r.host;
+        if (peerSock) send(peerSock, { type: 'peer_joined', room: code, role });
+        break;
+      }
 
       case 'create': {
         if (room) return; // قبلاً عضو اتاقی هستیم
@@ -282,6 +322,16 @@ function handle(ws) {
       case 'ping':
         send(ws, { type: 'pong' });
         break;
+
+      default: {
+        // حالت register (پلیر اکستنشن): پیام‌های state/play/pause/seek/volume/
+        // hello/hi-back/bye را بدون تغییر بسته‌بندی برای بقیهٔ اعضای اتاق فوروارد کن
+        if (r && msg.type && ['state','play','pause','seek','volume','hello','hi-back','bye'].includes(msg.type)) {
+          const peerSock = role === 'host' ? r.guest : r.host;
+          if (peerSock) send(peerSock, msg);
+        }
+        break;
+      }
     }
   });
 
