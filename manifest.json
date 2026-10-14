@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "Video Unlocker Pro",
+  "version": "1.0.0",
+  "description": "پنل کنترل پیشرفته ویدیو با قابلیت حذف قفل",
+  "permissions": ["scripting", "activeTab"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [{
+    "matches": ["<all_urls>"],
+    "js": ["content.js"],
+    "run_at": "document_idle"
+  }],
+  "web_accessible_resources": [{
+    "resources": ["main.js", "icon.svg"],
+    "matches": ["<all_urls>"]
+  }],
+  "icons": {
+    "16": "icon.svg",
+    "48": "icon.svg",
+    "128": "icon.svg"
+  }
+}
