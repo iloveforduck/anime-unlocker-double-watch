@@ -43,14 +43,47 @@ chrome.runtime.onInstalled.addListener(() => {
     console.log("🎮 اکستنشن نصب شد — فعال‌سازی خودکار روشن است (بدون دکمه)");
 });
 // ===== دابل‌واچ: باز کردن تب جدا برای صفحهٔ ویدیو (درخواست از double-watch.js) =====
+// تب جدید توسط خود اکستنشن ساخته می‌شود؛ کد اتاق همراه لینک است تا ورود
+// خودکار انجام شود. اگر سرور همگام‌سازی تنظیم نشده باشد، به‌جای باز کردن
+// همان صفحهٔ سایت، یک «صفحهٔ اتصال» داخلی (popup.html) با فرم کد باز می‌شود.
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'DW_OPEN_TAB') {
         let url = '';
         try { url = String(request.url || ''); } catch (e) {}
         if (!/^https?:\/\//i.test(url)) { sendResponse({ ok: false }); return; }
+        const code = /^[A-Z0-9]{4,8}$/.test(String(request.code || '')) ? String(request.code).toUpperCase() : '';
+        if (code) url += (/[\?&]/.test(url.split('#')[0]) ? '&' : '?') + 'dw=' + code;
         chrome.tabs.create({ url, active: true }, (tab) => {
             sendResponse({ ok: !chrome.runtime.lastError, tabId: tab && tab.id });
         });
         return true; // پاسخ ناهمگام
+    }
+    // از «صفحهٔ اتصال» اکستنشن: یک تب سایتِ باز را با ?dw=CODE ریلود کن تا
+    // پلیر خودکار وارد اتاق شود؛ اگر نبود، آخرین تب http را در همان سایت باز کن.
+    if (request.action === 'DW_OPEN_TAB_FROM_POPUP') {
+        const code = /^[A-Z0-9]{4,8}$/.test(String(request.code || '')) ? String(request.code).toUpperCase() : '';
+        if (!code) { sendResponse({ ok: false }); return; }
+        try { chrome.storage.local.set({ ['dw_pass_' + code]: String(request.pass || '') }); } catch {}
+        chrome.tabs.query({ url: 'http://*/*' }, (httpTabs) => {
+            chrome.tabs.query({ url: 'https://*/*' }, (httpsTabs) => {
+                const tabs = [].concat(httpTabs || [], httpsTabs || [])
+                    .filter(t => t.url && !t.url.startsWith(chrome.runtime.getURL('')));
+                // ترجیح: تبی که همین الان فعال است، وگرنه تازه‌ترین تب سایت
+                const target = tabs.find(t => t.active) || tabs[tabs.length - 1];
+                if (!target) { sendResponse({ ok: false }); return; }
+                let u = target.url.split('?')[0].split('#')[0];
+                u += '?dw=' + code;
+                chrome.tabs.update(target.id, { url: u, active: true }, () => {
+                    sendResponse({ ok: !chrome.runtime.lastError, tabId: target.id });
+                });
+            });
+        });
+        return true;
+    }
+    if (request.action === 'DW_OPEN_CONNECT_PAGE') {
+        chrome.tabs.create({ url: chrome.runtime.getURL('popup.html'), active: true }, (tab) => {
+            sendResponse({ ok: !chrome.runtime.lastError, tabId: tab && tab.id });
+        });
+        return true;
     }
 });

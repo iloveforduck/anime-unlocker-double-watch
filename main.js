@@ -97,6 +97,55 @@
         }
     }
 
+    // ---------- همگام‌سازی مستقیم بین تب‌های همین مرورگر (BroadcastChannel) ----------
+    // رفع «کلان سیستم اتصال کار نمی‌کند»: وقتی میزبان و مهمان در دو تب یک
+    // مرورگر هستند (مثلاً با دکمهٔ «تب جدید» اکستنشن)، وضعیت پخش بی‌درنگ و
+    // بدون وابستگی به سرور/اینترنت بین تب‌ها رد و بدل می‌شود.
+    // ⚠️ BroadcastChannel فقط دادهٔ سریال‌پذیر می‌فرستد؛ هر تب بسته به نقشش
+    // (host/guest از پیام DW_STATE) یکی از دو listener فعال را دارد.
+    let dwBc = null;
+    function dwSwitchBc(code) {
+        try { if (dwBc) { dwBc.onmessage = null; dwBc.close(); } } catch {}
+        dwBc = null;
+        if (!code) return;
+        try { dwBc = new BroadcastChannel('dw-sync-' + code); } catch { dwBc = null; }
+    }
+    // میزبان: هر رویداد پخش را علاوه بر WS، داخل همین مرورگر هم پخش کن
+    const _origEmitPlayerEvent = emitPlayerEvent;
+    emitPlayerEvent = function (kind, extra = {}) {
+        _origEmitPlayerEvent(kind, extra);
+        if (dw.role !== 'host' || !dwBc) return;
+        const payload = Object.assign({ kind }, extra);
+        if (video) {
+            payload.currentTime = video.currentTime;
+            payload.duration = video.duration || 0;
+            payload.playing = !video.paused && !video.ended;
+        }
+        try { dwBc.postMessage({ type: 'relay', data: payload }); } catch {}
+    };
+    // مهمان: پیام مستقیم تب میزبان را اعمال کن (بدون نیاز به WS)
+    function dwBcGuestHandler(e) {
+        const d = e.data || {};
+        if (!d || d.type !== 'relay') return;
+        const ev = d.data || {};
+        if (ev.kind === 'state') dwApplyRemoteState(!!ev.playing, ev.currentTime);
+        else if (ev.kind === 'play') dwApplyRemoteState(true, ev.currentTime);
+        else if (ev.kind === 'pause' || ev.kind === 'ended') dwApplyRemoteState(false, null);
+        else if (ev.kind === 'seek') dwApplyRemoteState(video ? !video.paused : false, ev.currentTime);
+    }
+    // میزبان: درخواست همگام‌سازی از تب مهمان → وضعیت فعلی را فوری بفرست
+    function dwBcHostHandler(e) {
+        const d = e.data || {};
+        if (!d || !d.type) return;
+        if (d.type === 'hello' || (d.type === 'relay' && d.data && d.data.type === 'request-sync')) {
+            if (video) emitPlayerEvent('state');
+        }
+    }
+
+    // ---------- کانال تب‌های محلی: کد اتاق از double-watch.js ----------
+    // double-watch.js در ISOLATED world است و BroadcastChannel بین world ها
+    // مشترک است؛ اما برای اطمینان، کد اتاق را با هر DW_STATE هم داخل detail
+    // می‌فرستیم تا main.js همان لحظه کانال را بسازد.
     function dwHandleMsg(e) {
         // شنوندهٔ document فقط رویدادهای dispatch‌شده روی document را می‌بیند؛
         // اگر رویداد دوجهته (document+window) بوده و از طریق window رسیده،
@@ -113,6 +162,14 @@
                 dw.role = m.role || null;
                 dw.active = (dw.state !== 'off' && dw.state !== 'disconnected');
                 updateUI();
+                // کانال تب‌های محلی: با هر تغییر وضعیت/کد، دوباره بساز و listener را وصل کن
+                if (m.code) dw.lastCode = m.code;
+                dwSwitchBc(dw.active ? (m.code || dw.lastCode || '') : '');
+                if (dwBc) {
+                    const roleHandler = (dw.role === 'host') ? dwBcHostHandler : (dw.role === 'guest' ? dwBcGuestHandler : null);
+                    dwBc.onmessage = roleHandler;
+                    if (dw.role === 'guest') { try { dwBc.postMessage({ type: 'hello' }); } catch {} }
+                }
                 // نوار «تب جدید» فقط وقتی دابل‌واچ فعال است نمایش داده شود
                 {
                     const tb = document.getElementById('dw-newtab-btn');

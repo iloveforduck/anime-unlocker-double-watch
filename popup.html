@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>دابل‌واچ — صفحهٔ اتصال</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: Tahoma, 'Segoe UI', Arial, sans-serif;
+    background: linear-gradient(160deg, #12121c 0%, #1e1e2f 100%);
+    color: #f8f8f2;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .card {
+    width: 420px;
+    max-width: 92vw;
+    background: rgba(30, 30, 47, .85);
+    border: 1px solid #44475a;
+    border-radius: 16px;
+    padding: 28px 26px;
+    box-shadow: 0 12px 40px rgba(0,0,0,.5);
+  }
+  h1 { font-size: 20px; margin-bottom: 6px; color: #8be9fd; }
+  p.sub { font-size: 13px; color: #bd93f9; margin-bottom: 22px; line-height: 1.8; }
+  label { display: block; font-size: 13px; color: #ffb86c; margin: 14px 0 6px; }
+  input {
+    width: 100%;
+    padding: 11px 14px;
+    border-radius: 10px;
+    border: 1px solid #44475a;
+    background: #21222c;
+    color: #f8f8f2;
+    font-size: 15px;
+    direction: ltr;
+    text-align: center;
+    letter-spacing: 2px;
+  }
+  input:focus { outline: none; border-color: #50fa7b; }
+  button {
+    width: 100%;
+    margin-top: 18px;
+    padding: 12px;
+    border: none;
+    border-radius: 10px;
+    background: #50fa7b;
+    color: #12121c;
+    font-size: 15px;
+    font-weight: bold;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  button:hover { filter: brightness(1.1); }
+  button.secondary { background: #44475a; color: #f8f8f2; margin-top: 10px; }
+  #status {
+    margin-top: 16px;
+    font-size: 13px;
+    min-height: 20px;
+    text-align: center;
+    color: #6272a4;
+    line-height: 1.7;
+  }
+  .code-big {
+    display: none;
+    margin-top: 16px;
+    text-align: center;
+    background: #21222c;
+    border: 1px dashed #50fa7b;
+    border-radius: 10px;
+    padding: 14px;
+  }
+  .code-big b { font-size: 26px; letter-spacing: 6px; color: #50fa7b; direction: ltr; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>🎬 دابل‌واچ — اتصال با کد</h1>
+    <p class="sub">این صفحه توسط خود اکستنشن ساخته شده است. کد اتاقی که دوستت به تو داده را وارد کن تا هم‌زمان فیلم ببینید.</p>
+
+    <label for="server">آدرس سرور همگام‌سازی (Cloudflare Worker) — اختیاری اگر قبلاً ذخیره شده</label>
+    <input id="server" type="text" placeholder="dw-sync.username.workers.dev" autocomplete="off">
+
+    <label for="code">کد اتاق (۴ تا ۸ حرف/عدد)</label>
+    <input id="code" type="text" maxlength="8" placeholder="مثلاً A1B2C3" autocomplete="off" style="text-transform:uppercase">
+
+    <label for="pass">رمز اتاق — اگر دارد</label>
+    <input id="pass" type="password" placeholder="(بدون رمز خالی بگذار)" autocomplete="off" style="letter-spacing:normal;text-align:right;direction:rtl">
+
+    <button id="join">🔗 ورود به اتاق و باز کردن پلیر</button>
+    <button id="host" class="secondary">📺 میزبان باش — ساخت لینک دابل‌واچ از آدرس سایت</button>
+    <input id="hosturl" type="text" placeholder="https://example.com/video-page" style="display:none;margin-top:10px" autocomplete="off">
+
+    <div class="code-big" id="codeBox">✅ وارد اتاق شدی — کد: <b id="codeShow"></b><br><span style="font-size:12px;color:#6272a4">در تب دیگری که همین اکستنشن نصب دارد، همین کد را وارد کنید؛ هر دو تب همگام می‌مانند.</span></div>
+    <div id="status">آمادهٔ اتصال...</div>
+  </div>
+
+<script src="popup.js"></script>
+</body>
+</html>
