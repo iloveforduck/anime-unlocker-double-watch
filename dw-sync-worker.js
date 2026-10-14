@@ -1,11 +1,13 @@
 // ===== سرور همگام‌سازی دابل‌واچ — Cloudflare Worker =====
-// رایگان، بدون هزینه. راه‌اندازی:
+// رایگان، بدون هزینه. راه‌اندازی از طریق داشبورد (کاملاً دستی):
 //   1) وارد dash.cloudflare.com شو → Workers & Pages → Create → Worker
-//      (یا با CLI: npm i -g wrangler && wrangler init dw-sync)
-//   2) کد زیر را کامل در index.js کپی و Deploy کن
-//   3) آدرس نمایش‌داده‌شده (مثل https://dw-sync.username.workers.dev) را
+//   2) نام Worker را dw-sync بگذار، کد آماده را پاک کن و این فایل را کامل کپی کن
+//   3) دکمهٔ Deploy را بزن
+//   4) آدرس نمایش‌داده‌شده (مثل https://dw-sync.username.workers.dev) را
 //      در فایل double-watch.js داخل متغیر SYNC_SERVER_URL بگذار
-//   4) اکستنشن را در chrome://extensions دوباره Reload کن
+//   5) اکستنشن را در chrome://extensions دوباره Reload کن
+// نکته: اگر بعداً هر دو نفر در اتاقی بودند ولی پیام‌ها رد و بدل نشد،
+//       یک بار Worker را Redeploy کن تا instanceهای قدیمی ریست شوند.
 //
 // این Worker دو کار انجام می‌دهد:
 //   • مسیر /sync  → WebSocket relay بین دو نفر (اتاق با کد اشتراک + رمز اختیاری)
