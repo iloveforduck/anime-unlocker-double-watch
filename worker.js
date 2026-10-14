@@ -53,7 +53,9 @@ function closeQuietly(ws) {
 }
 
 // تمیزکاری دوره‌ای اتاق‌های رهاشده
-setInterval(() => {
+// نکته: در محیط Cloudflare Workers تابع setInterval مقدار عددی برمی‌گرداند و
+// متد unref وجود ندارد؛ این کد هم در Node و هم Workers بدون خطا کار می‌کند.
+const cleanupTimer = setInterval(() => {
   const now = Date.now();
   for (const [code, r] of rooms) {
     if (now - r.lastTs > ROOM_TTL_MS) {
@@ -62,7 +64,12 @@ setInterval(() => {
       rooms.delete(code);
     }
   }
-}, 5 * 60 * 1000).unref?.();
+}, 5 * 60 * 1000);
+
+// فقط در Node.js (برای تست محلی) تایمر را از نگه‌داشتن پروسه آزاد می‌کنیم
+if (typeof cleanupTimer === "object" && typeof cleanupTimer.unref === "function") {
+  cleanupTimer.unref();
+}
 
 // HTML حداقلی صفحهٔ فرود — double-watch.js (content script) آن را زیباسازی می‌کند.
 function landingHtml() {
