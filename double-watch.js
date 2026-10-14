@@ -41,12 +41,20 @@
     }, 1500);
 
     // ---------- پیام به main.js (MAIN world) ----------
+    // CustomEvent ها بین ISOLATED/MAIN world مشترک نیستند؛ هر پیام هم روی
+    // document و هم روی window dispatch می‌شود تا حتماً به main.js برسد.
+    // نام رویداد DW_EXT_MSG است چون listener های main.js روی همین نام هستند.
+    // (main.js با فلگ __dwShared از پردازش تکراری جلوگیری می‌کند.)
     function toMain(detail) {
-        document.dispatchEvent(new CustomEvent('DW_MAIN_MSG', { detail }));
+        const ev = new CustomEvent('DW_EXT_MSG', { detail });
+        ev.__dwShared = true;
+        document.dispatchEvent(ev);
+        try { window.dispatchEvent(ev); } catch {}
     }
 
     // ---------- دریافت پیام از main.js ----------
-    document.addEventListener('DW_EXT_MSG', (e) => {
+    function dwExtHandler(e) {
+        if (e.__dwShared && e.currentTarget === window) return; // نسخهٔ document پردازش می‌شود
         const m = e.detail || {};
         switch (m.action) {
             case 'DW_TOGGLE':
@@ -60,7 +68,9 @@
                 disconnect();
                 break;
         }
-    });
+    }
+    document.addEventListener('DW_EXT_MSG', dwExtHandler);
+    window.addEventListener('DW_EXT_MSG', dwExtHandler);
 
     // تشخیص صفحهٔ فرود Worker حتی وقتی آدرس سرور در اکستنشن تنظیم نشده است.
     // هر ساب‌دامنه‌ای که با .workers.dev تمام می‌شود، صفحهٔ Join ماست.
@@ -340,7 +350,8 @@
     }
 
     // ---------- گزارش رویدادهای پلیر از main.js ----------
-    document.addEventListener('DW_EVENT', (e) => {
+    function dwEventHandler(e) {
+        if (e.__dwShared && e.currentTarget === window) return; // از طریق document پردازش می‌شود
         const ev = e.detail || {};
         try { sessionStorage.setItem('dw_host_video_href', location.href); } catch {}
         if (isHost) {
@@ -354,7 +365,9 @@
             // مهمان: فقط «درخواست همگام‌سازی» (با نگه‌داشتن) ارسال می‌شود
             if (ev.kind === 'request-sync') relayToPeer({ type: 'request-sync' });
         }
-    });
+    }
+    document.addEventListener('DW_EVENT', dwEventHandler);
+    window.addEventListener('DW_EVENT', dwEventHandler);
 
     // ---------- همگام‌سازی دوره‌ای (رفع درفتِ پخش) ----------
     setInterval(() => {

@@ -44,8 +44,16 @@
     }
 
     // ===== ارتباط دابل‌واچ با double-watch.js (ISOLATED world) =====
+    // main.js در MAIN world اجرا می‌شود و double-watch.js در ISOLATED world.
+    // CustomEvent های dispatch شده روی document بین این دو world مشترک نیستند،
+    // پس هر پیام دوباره publish می‌شود: یکی روی document (برای خودِ main.js)
+    // و یکی روی window (برای double-watch.js). هر listener با فلگ globalThis
+    // از پردازش تکراری جلوگیری می‌کند.
     function toExt(detail) {
-        document.dispatchEvent(new CustomEvent('DW_EXT_MSG', { detail }));
+        const ev = new CustomEvent('DW_EXT_MSG', { detail });
+        ev.__dwShared = true;                 // نشانهٔ ارسال دوجهته
+        document.dispatchEvent(ev);           // برای خود main.js (MAIN world)
+        try { window.dispatchEvent(ev); } catch {} // برای double-watch.js (ISOLATED world)
     }
 
     // رویدادها فقط از طریق این تابع ارسال می‌شوند؛ dw.suppress جلوی حلقه را می‌گیرد
@@ -57,7 +65,9 @@
             payload.duration = video.duration || 0;
             payload.playing = !video.paused && !video.ended;
         }
-        document.dispatchEvent(new CustomEvent('DW_EVENT', { detail: payload }));
+        const ev = new CustomEvent('DW_EVENT', { detail: payload });
+        document.dispatchEvent(ev);               // MAIN world listeners
+        try { window.dispatchEvent(ev); } catch {} // ISOLATED world (double-watch.js)
     }
 
     // ---------- اعمال دستورات طرف مقابل (مهمان) ----------
@@ -83,8 +93,16 @@
     }
 
     function dwHandleMsg(e) {
+        // شنوندهٔ document فقط رویدادهای dispatch‌شده روی document را می‌بیند؛
+        // اگر رویداد دوجهته (document+window) بوده و از طریق window رسیده،
+        // نسخهٔ document آن پردازش شده — رد کن تا دوباره اجرا نشود.
+        if (e.__dwShared && e.currentTarget === window) return;
         const m = (e && e.detail) || {};
         switch (m.action) {
+            case 'DW_TOGGLE':
+                // از دکمهٔ پنل (dwToggleUI) یا double-watch.js: فقط UI را آماده کن
+                buildDWUIIfNeeded();
+                break;
             case 'DW_STATE':
                 dw.state = m.state || 'off';
                 dw.role = m.role || null;
@@ -132,6 +150,9 @@
         }
     }
     document.addEventListener('DW_EXT_MSG', dwHandleMsg);
+    // نسخهٔ window برای پیام‌هایی که double-watch.js (ISOLATED world) روی
+    // window dispatch می‌کند و به MAIN world می‌رسند.
+    window.addEventListener('DW_EXT_MSG', dwHandleMsg);
 
     // ---------- اتصال رویدادهای ویدیو به دابل‌واچ ----------
     let dwVideoEl = null;
@@ -156,6 +177,9 @@
     }
 
     // ---------- دکمه و بخش دابل‌واچ در پنل ----------
+    // توجه: main.js در MAIN world اجرا می‌شود؛ CustomEvent ها بین world ها
+    // مشترک نیستند. پیام‌ها باید هم روی document و هم روی window ارسال شوند تا
+    // double-watch.js (ISOLATED world) آن‌ها را ببیند.
     function dwToggleUI() {
         const section = document.getElementById('adv-dw-section');
         if (!section) return;
@@ -168,6 +192,16 @@
         }
     }
 
+    // اگر double-watch.js درخواست DW_TOGGLE داد، مطمئن شو بخشش ساخته/نمایش داده شده
+    function buildDWUIIfNeeded() {
+        let section = document.getElementById('adv-dw-section');
+        if (!section && controlPanel) {
+            buildDWSection(controlPanel);
+            section = document.getElementById('adv-dw-section');
+        }
+        if (section) section.style.display = 'block';
+    }
+
     // ساخت بخش دابل‌واچ داخل پنل کنترل
     function buildDWSection(parent) {
         const sec = document.createElement('div');
@@ -178,9 +212,10 @@
 
     // ---------- صفحهٔ فرود Join (تب دوم مهمان) ----------
     // وقتی دوست لینک اشتراک را باز می‌کند، double-watch.js این صفحه را در همان
-    // تب نمایش می‌دهد و کد اتاق را از هَش استخراج می‌کند. ما اینجا فقط آن را
-    // به form ورود کد منتقل می‌کنیم تا کاربر با یک Enter وارد شود.
-    document.addEventListener('DW_EXT_MSG', (e) => {
+    // تب نمایش می‌دهد و کد اتاق را از پارامتر ?c= استخراج می‌کند. ما اینجا فقط
+    // آن را به form ورود کد منتقل می‌کنیم تا کاربر با یک Enter وارد شود.
+    function dwPrefillHandler(e) {
+        if (e.__dwShared && e.currentTarget === window) return;
         const m = (e && e.detail) || {};
         if (m.action === 'DW_JOIN_PREFILL' && m.code) {
             const section = document.getElementById('adv-dw-section');
@@ -195,7 +230,9 @@
                 }
             }, 400);
         }
-    });
+    }
+    document.addEventListener('DW_EXT_MSG', dwPrefillHandler);
+    window.addEventListener('DW_EXT_MSG', dwPrefillHandler);
 
     // ===== تشخیص قفل =====
     function isLocked() {

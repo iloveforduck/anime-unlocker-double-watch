@@ -165,8 +165,10 @@ export default {
         `<script>(function(){var code=${JSON.stringify(code)};var v=${JSON.stringify(safeV)};` +
         `window.__DW_LANDING__={code:code,v:v};` +
         `try{if(code){sessionStorage.setItem('dw_autojoin',JSON.stringify({code:code,pass:new URLSearchParams(location.search).get('p')||'',ts:Date.now()}));}}catch(e){}` +
-        `if(v){setTimeout(function(){location.replace(v);},300);}else{` +
-        `var p=document.getElementById('p');if(p&&code)p.textContent='کد اتاق: '+code+' — در تب ویدیو از پنل دابل‌واچ «ورود با کد» را بزنید.';}}})();</script></body>`
+        `var line=document.getElementById('roomline');` +
+        `if(v){setTimeout(function(){location.replace(v);},300);return;}` +
+        `if(code&&line){line.style.display='block';var rc=document.getElementById('roomcode');if(rc)rc.textContent=code;` +
+        `var st=document.getElementById('st');if(st)st.textContent='کد اتاق: '+code+' — اگر اکستنشن نصب نیست، دکمهٔ «ورود به اتاق» را بزنید.';}}})();</script></body>`
       );
       return new Response(html, {
         headers: { 'Content-Type': 'text/html; charset=utf-8' }
