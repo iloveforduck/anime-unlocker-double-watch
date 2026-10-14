@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🎬 دابل‌واچ — پلیر اکستنشن</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #1a1b26; color: #f8f8f2; font-family: Tahoma, 'Segoe UI', sans-serif;
+    min-height: 100vh; display: flex; flex-direction: column; align-items: center;
+  }
+  header { width: 100%; padding: 14px 20px; background: #21233a; display: flex; justify-content: space-between; align-items: center; }
+  header h1 { font-size: 17px; color: #8be9fd; }
+  #status { font-size: 13px; }
+  #stage { width: 100%; max-width: 1100px; background: #000; position: relative; }
+  video { width: 100%; display: block; max-height: 68vh; background: #000; }
+  #controls { width: 100%; max-width: 1100px; padding: 10px 16px; background: #21233a; display: none; gap: 10px; align-items: center; flex-wrap: wrap; }
+  #bar { flex: 1 1 300px; height: 8px; background: #44475a; border-radius: 4px; cursor: pointer; position: relative; }
+  #barFill { height: 100%; width: 0%; background: #ff79c6; border-radius: 4px; }
+  .btn {
+    background: #44475a; color: #f8f8f2; border: none; border-radius: 8px;
+    padding: 8px 14px; font-size: 14px; cursor: pointer; font-family: inherit;
+  }
+  .btn:hover { background: #6272a4; }
+  .btn.primary { background: #bd0057; }
+  .btn.primary:hover { background: #e00168; }
+  .btn.cyan { background: #00748a; }
+  .btn.cyan:hover { background: #0094b0; }
+  input, select {
+    background: #282a3e; border: 1px solid #44475a; color: #f8f8f2;
+    border-radius: 8px; padding: 9px 12px; font-size: 14px; font-family: inherit; direction: ltr; text-align: left;
+  }
+  input:focus { outline: none; border-color: #8be9fd; }
+  #connect { width: 100%; max-width: 640px; padding: 24px; background: #21233a; border-radius: 14px; margin: 30px 16px; display: flex; flex-direction: column; gap: 12px; }
+  #connect h2 { color: #ff79c6; font-size: 16px; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .row input { flex: 1 1 180px; }
+  label { font-size: 12px; color: #6272a4; display: block; margin-bottom: 4px; }
+  #roomUI { display: none; width: 100%; max-width: 1100px; padding: 12px 16px; background: #21233a; }
+  .info-chip { background: #282a3e; border-radius: 8px; padding: 6px 12px; font-size: 13px; }
+  #codeShow { color: #50fa7b; font-weight: bold; letter-spacing: 2px; font-size: 16px; }
+  #shareLink { flex: 1 1 300px; font-size: 12px; }
+  .time { font-size: 12px; color: #6272a4; direction: ltr; }
+  footer { margin-top: auto; padding: 10px; font-size: 11px; color: #44475a; }
+</style>
+</head>
+<body>
+  <div id="screen" style="width:100%;display:flex;flex-direction:column;align-items:center;">
+    <header>
+      <h1>🎬 دابل‌واچ — پلیر خود اکستنشن</h1>
+      <span id="status">در حال بارگذاری...</span>
+    </header>
+
+    <div id="stage">
+      <video id="video" playsinline></video>
+    </div>
+
+    <!-- کنترل‌های پلیر (نوار ابزار) -->
+    <div id="controls">
+      <button class="btn" id="muteBtn" title="بی‌صدا">🔊</button>
+      <span class="time" id="timeNow">00:00</span>
+      <div id="bar"><div id="barFill"></div></div>
+      <span class="time" id="timeDur">--:--</span>
+      <input type="range" id="volSlider" min="0" max="1" step="0.05" value="1" style="width:80px">
+      <button class="btn" id="fullscreenBtn" title="تمام‌صفحه">⛶</button>
+    </div>
+
+    <!-- پنل اطلاعات اتاق (بعد از اتصال) -->
+    <div id="roomUI">
+      <div class="row" style="align-items:center">
+        <span class="info-chip">کد اتاق: <span id="codeShow"></span></span>
+        <span class="info-chip">نقش: <span id="roleShow"></span></span>
+        <span class="info-chip" id="peerInfo">⚪ منتظر هم‌تابی...</span>
+        <input id="shareLink" readonly placeholder="لینک دعوت">
+        <button class="btn cyan" id="copyBtn">📋 کپی لینک</button>
+        <button class="btn" id="leaveBtn">خروج</button>
+      </div>
+    </div>
+
+    <!-- فرم اتصال -->
+    <div id="connect">
+      <h2>🔗 اتصال با کد اتاق</h2>
+      <div>
+        <label>آدرس مستقیم ویدیو (mp4/webm — اختیاری برای مهمان)</label>
+        <input id="srcInput" style="width:100%" placeholder="https://example.com/video.mp4">
+      </div>
+      <div class="row">
+        <div style="flex:1 1 160px">
+          <label>کد اتاق (۴–۸ حرف/عدد)</label>
+          <input id="codeInput" style="width:100%" maxlength="8" placeholder="خالی = کد تصادفی">
+        </div>
+        <div style="flex:1 1 160px">
+          <label>رمز اتاق (اختیاری)</label>
+          <input id="passInput" style="width:100%" type="password" placeholder="••••">
+        </div>
+      </div>
+      <div>
+        <label>سرور همگام‌سازی (برای اتصال بین دستگاه‌ها — اختیاری)</label>
+        <input id="serverInput" style="width:100%" placeholder="نام ساب‌دامنهٔ Worker یا https://...">
+      </div>
+      <div class="row">
+        <button class="btn primary" id="hostBtn" style="flex:1">🏠 ساخت اتاق (میزبان)</button>
+        <button class="btn cyan" id="joinBtn" style="flex:1">🚪 ورود با کد (مهمان)</button>
+      </div>
+      <p style="font-size:12px;color:#6272a4">💡 در همان مرورگر، BroadcastChannel بدون سرور هم کار می‌کند. برای دوستتان در دستگاه دیگر، سرور Worker را پر کنید و لینک دعوت را بفرستید.</p>
+    </div>
+
+    <footer>Video Unlocker Pro — Double Watch Player • تب داخلی اکستنشن</footer>
+  </div>
+  <script src="player.js"></script>
+</body>
+</html>

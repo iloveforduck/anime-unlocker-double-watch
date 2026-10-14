@@ -273,19 +273,41 @@
         }
     }
 
-    // ---------- «صفحهٔ اتصال» خود اکستنشن (popup.html در تب جدید) ----------
-    // وقتی سرور همگام‌سازی هنوز تنظیم نشده، این صفحهٔ داخلی با فرم «اتصال با کد»
-    // در تب جدید باز می‌شود؛ پلیر و UI کاملاً متعلق به خود اکستنشن است.
-    function openConnectPage() {
+    // ---------- «پلیر خود اکستنشن» در تب جدید (player.html) ----------
+    // یک تب کاملاً مستقل که توسط خود اکستنشن ساخته می‌شود؛ کد اتاق و آدرس
+    // ویدیوی سایت از طریق hash و chrome.storage منتقل می‌شوند.
+    function getSiteVideoSrc() {
         try {
-            chrome.runtime.sendMessage({ action: 'DW_OPEN_CONNECT_PAGE' }, (res) => {
+            const v = document.querySelector('video');
+            if (!v) return '';
+            let s = v.currentSrc || v.src || '';
+            if (!s) { const so = v.querySelector('source'); if (so) s = so.src || ''; }
+            if (/^https?:\/\//i.test(s)) return s;
+            try { return new URL(s, location.href).href; } catch { return ''; }
+        } catch { return ''; }
+    }
+    function openConnectPage() {
+        const payload = { action: 'DW_OPEN_CONNECT_PAGE', code: roomCode || '', src: getSiteVideoSrc() };
+        try {
+            chrome.runtime.sendMessage(payload, (res) => {
                 if (chrome.runtime.lastError || !res || !res.ok) {
-                    try { window.open(chrome.runtime.getURL('popup.html'), '_blank'); } catch {}
+                    let u = chrome.runtime.getURL('player.html');
+                    const h = [];
+                    if (payload.code) h.push('join=' + payload.code);
+                    if (payload.src) h.push('src=' + encodeURIComponent(payload.src));
+                    if (h.length) u += '#' + h.join('&');
+                    try { window.open(u, '_blank'); } catch {}
                 }
             });
         } catch {
-            try { window.open(chrome.runtime.getURL('popup.html'), '_blank'); } catch {}
+            try { window.open(chrome.runtime.getURL('player.html'), '_blank'); } catch {}
         }
+    }
+    // src فعلی سایت را به تب‌های پلیرِ باز در همین مرورگر بفرست
+    function pushSrcToPlayers() {
+        const src = getSiteVideoSrc();
+        if (!src) return;
+        try { chrome.runtime.sendMessage({ action: 'DW_PUSH_SRC_TO_PLAYER', src }, () => void chrome.runtime.lastError); } catch {}
     }
 
     // فعال کردن پنل اکستنشن (main.js) و نمایش بخش دابل‌واچ — فقط روی صفحاتی

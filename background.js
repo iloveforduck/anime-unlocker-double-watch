@@ -81,8 +81,31 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
     if (request.action === 'DW_OPEN_CONNECT_PAGE') {
-        chrome.tabs.create({ url: chrome.runtime.getURL('popup.html'), active: true }, (tab) => {
+        // پلیر خود اکستنشن در تب جدید — با کد اتاق و آدرس ویدیو (در صورت وجود)
+        let url = chrome.runtime.getURL('player.html');
+        const code = /^[A-Z0-9]{4,8}$/.test(String(request.code || '')) ? String(request.code).toUpperCase() : '';
+        const hashParts = [];
+        if (code) hashParts.push('join=' + code);
+        if (request.src && /^https?:\/\//i.test(request.src)) {
+            try { chrome.storage.local.set({ ['dw_src_' + code]: request.src }); } catch {}
+            hashParts.push('src=' + encodeURIComponent(request.src));
+        }
+        if (hashParts.length) url += '#' + hashParts.join('&');
+        chrome.tabs.create({ url, active: true }, (tab) => {
             sendResponse({ ok: !chrome.runtime.lastError, tabId: tab && tab.id });
+        });
+        return true;
+    }
+    // هم‌تابیِ همان مرورگر: src ویدیوی سایت را به پلیر بازِ اکستنشن بفرست
+    if (request.action === 'DW_PUSH_SRC_TO_PLAYER') {
+        const src = String(request.src || '');
+        if (!/^https?:\/\//i.test(src)) { sendResponse({ ok: false }); return; }
+        chrome.tabs.query({ url: chrome.runtime.getURL('player.html') + '*' }, (tabs) => {
+            let sent = false;
+            for (const t of tabs || []) {
+                try { chrome.tabs.sendMessage(t.id, { action: 'DW_SET_SRC', src }, () => { void chrome.runtime.lastError; }); sent = true; } catch {}
+            }
+            sendResponse({ ok: sent, count: (tabs || []).length });
         });
         return true;
     }

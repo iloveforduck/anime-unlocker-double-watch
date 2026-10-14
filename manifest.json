@@ -13,7 +13,7 @@
     "run_at": "document_idle"
   }],
   "web_accessible_resources": [{
-    "resources": ["main.js", "icon.svg", "popup.html", "popup.js"],
+    "resources": ["main.js", "icon.svg", "popup.html", "popup.js", "player.html", "player.js"],
     "matches": ["<all_urls>"]
   }],
   "host_permissions": ["wss://*/*", "http://*/*", "https://*/*"],
