@@ -24,6 +24,22 @@
     let panelEl = null;
     let statusEl = null;
 
+    // ---------- ورود خودکار روی صفحهٔ ویدیو (از هر دامنه) ----------
+    // اگر لینک دابل‌واچ باز شده و کد اتاق در sessionStorage همین دامنه ذخیره است،
+    // به‌محض اجرای content script تلاش کن — حتی قبل از ساخته شدن پنل اکستنشن.
+    // main.js بعداً با DW_TOGGLE دوباره صدا می‌زند؛ flag از تکرار اتصال جلوگیری می‌کند.
+    let autoJoinTried = false;
+    function tryAutoJoinOnVideoPage() {
+        if (autoJoinTried || connected) return;
+        autoJoinTried = true;
+        const started = tryAutoJoin();
+        if (started) revealExtPanel();
+    }
+    const dwInitTimer = setInterval(() => {
+        if ((connected && dwPaired) || autoJoinTried) { clearInterval(dwInitTimer); return; }
+        tryAutoJoinOnVideoPage();
+    }, 1500);
+
     // ---------- پیام به main.js (MAIN world) ----------
     function toMain(detail) {
         document.dispatchEvent(new CustomEvent('DW_MAIN_MSG', { detail }));
@@ -46,6 +62,53 @@
         }
     });
 
+    // تشخیص صفحهٔ فرود Worker حتی وقتی آدرس سرور در اکستنشن تنظیم نشده است.
+    // هر ساب‌دامنه‌ای که با .workers.dev تمام می‌شود، صفحهٔ Join ماست.
+    function isWorkerLandingPage() {
+        if (/^https?:$/.test(location.protocol) && /\.workers\.dev$/i.test(location.hostname)) return true;
+        // اگر SYNC_SERVER_URL تنظیم شده باشد، همان دامنه هم مجاز است
+        const base = (SYNC_SERVER_URL || '').trim();
+        if (base) { try { if (location.origin === new URL(base).origin) return true; } catch {} }
+        return false;
+    }
+
+    // ---------- صفحهٔ فرود Worker: ورود خودکار با کد از هَش ----------
+    function autoJoinFromWorkerLanding() {
+        if (!isWorkerLandingPage()) return false;
+        const m = location.hash.match(/^#([A-Za-z0-9]{4,8})$/);
+        if (!m) return false;
+        const code = m[1].toUpperCase();
+        // رمز از پارامتر ?p= یا sessionStorage (اگر قبلاً پرسیده شده)
+        let pass = '';
+        try {
+            const usp = new URLSearchParams(location.search);
+            pass = usp.get('p') || sessionStorage.getItem('dw_pass_' + code) || '';
+            if (!pass) pass = usp.get('pwd') || '';
+        } catch { pass = ''; }
+        buildUI();
+        connect(code, false, pass);
+        updateConnButtons('connected');
+        setStatus('⏳ ورود خودکار به اتاق ' + code + '...', '#ffb86c');
+        // اگر لینک، آدرس ویدیو (?v=) را داشت، بعد از برقراری اتصال خودکار منتقل شو
+        let vidTarget = null;
+        try {
+            const vv = new URLSearchParams(location.search).get('v');
+            if (vv && /^https?:\/\//i.test(vv)) vidTarget = vv;
+        } catch {}
+        if (vidTarget) {
+            setTimeout(() => { location.replace(vidTarget); }, 1500);
+        }
+        // پنل را وسط صفحه نمایش بده تا کاربر بداند چه خبر است
+        setTimeout(() => {
+            const sec = document.getElementById('adv-dw-section');
+            if (sec && sec.parentElement) {
+                sec.style.cssText += ';max-width:420px;margin:40px auto;border:1px solid rgba(189,147,249,.3);border-radius:16px;padding:16px;background:rgba(15,15,35,.95);';
+                sec.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+        }, 300);
+        return true;
+    }
+
     // ورود خودکار مهمان: اگر لینک دابل‌واچ قبلاً باز شده باشد، کد اتاق از
     // sessionStorage (هم‌دامنه با تب ویدیو) خوانده و اتصال خودکار برقرار می‌شود.
     function tryAutoJoin() {
@@ -55,17 +118,38 @@
         let j;
         try { j = JSON.parse(raw); } catch { return false; }
         if (!j || !j.code || (Date.now() - (j.ts || 0)) > 1000 * 60 * 60 * 24) return false;
-        try { sessionStorage.removeItem('dw_autojoin'); } catch {}
         buildUI();
         connect(j.code, false, j.pass || '');
         updateConnButtons('connected');
         setStatus('⏳ ورود خودکار به اتاق ' + j.code + '...', '#ffb86c');
+        // بعد از موفقیتِ ورود، پاک شود تا با رفرش دوباره وارد نشود؛
+        // اگر ورود ناموفق بود، برای تلاش مجدد نگه داشته می‌شود.
+        setTimeout(() => {
+            if (connected && dwPaired) { try { sessionStorage.removeItem('dw_autojoin'); } catch {} }
+        }, 3000);
         return true;
     }
 
+    // فعال کردن پنل اکستنشن (main.js) و نمایش بخش دابل‌واچ — فقط روی صفحاتی
+    // که واقعاً ویدیو دارند و کاربر باید وضعیت اتصال را ببیند.
+    function revealExtPanel() {
+        const hasVideo = !!(document.querySelector('video') || document.querySelector('.video-js') ||
+                            document.querySelector('.app-video-stage') || document.querySelector('.vjs-tech'));
+        if (!hasVideo) return;
+        const sec = document.getElementById('adv-dw-section');
+        if (sec) sec.style.display = 'block';
+        toMain({ action: 'DW_TOGGLE' });
+    }
+
     // ---------- WebSocket ----------
+    function serverBase() {
+        let base = (SYNC_SERVER_URL || '').trim().replace(/\/+$/, '');
+        if (!base) { try { base = localStorage.getItem('dw_server_url') || ''; } catch {} }
+        return base;
+    }
+
     function wsUrl() {
-        const base = (SYNC_SERVER_URL || '').trim().replace(/\/+$/, '');
+        const base = serverBase();
         if (!base) return null;
         const u = new URL(base);
         u.protocol = (u.protocol === 'https:') ? 'wss:' : ((u.protocol === 'http:') ? 'ws:' : u.protocol);
@@ -74,13 +158,18 @@
         return u.toString();
     }
 
-    // لینک اشتراک: آدرس سرور + هش کد اتاق + پارامتر v (آدرس صفحهٔ ویدیوی میزبان)
+    // لینک اشتراک: آدرس سرور + پارامتر c (کد اتاق) + پارامتر v (آدرس صفحهٔ ویدیوی میزبان)
+    // توجه: هش (#CODE) در درخواست HTTP به سرور ارسال نمی‌شود، پس کد حتماً باید
+    // به‌صورت query-param فرستاده شود تا Worker آن را ببیند. سازگاری با هش هم حفظ شده است.
     function shareLink(code) {
-        const base = (SYNC_SERVER_URL || '').trim().replace(/\/+$/, '');
-        let link = base + '/#' + code;
+        const base = serverBase();
+        if (!base) return 'کد اتاق: ' + code + ' — برای ساخت لینک، آدرس Worker را در پنل وارد کنید.';
+        let link = base + '/?c=' + code;
         try {
-            const v = sessionStorage.getItem('dw_host_video_href');
-            if (v && /^https?:\/\//i.test(v)) link += '?v=' + encodeURIComponent(v);
+            const v = sessionStorage.getItem('dw_host_video_href') || location.href;
+            if (v && /^https?:\/\//i.test(v) && !/\.workers\.dev/i.test(location.hostname)) {
+                link += '&v=' + encodeURIComponent(v);
+            }
         } catch {}
         return link;
     }
@@ -93,7 +182,7 @@
 
         const url = wsUrl();
         if (!url) {
-            setStatus('❌ آدرس سرور تنظیم نشده — مراحل README.md را ببینید (ساخت Cloudflare Worker و پر کردن SYNC_SERVER_URL)', '#ff5555');
+            setStatus('❌ آدرس سرور تنظیم نشده — در پنل دابل‌واچ، کادر «آدرس سرور» را پر و ذخیره کنید (یا مراحل README.md را ببینید)', '#ff5555');
             return;
         }
 
@@ -287,6 +376,39 @@
         head.innerHTML = '👥 دابل‌واچ (تماشای دونفره)';
         panelEl.appendChild(head);
 
+        // --- آدرس سرور همگام‌سازی (یک‌بار تنظیم شود، ذخیره می‌ماند) ---
+        const srvBox = document.createElement('div');
+        srvBox.id = 'dw-server-box';
+        srvBox.style.cssText = S.box + 'margin-bottom:10px;';
+        const srvLabel = document.createElement('div');
+        srvLabel.style.cssText = `font-size:10px;color:#6272a4;margin-bottom:4px;`;
+        srvLabel.textContent = 'آدرس سرور (Cloudflare Worker — یک‌بار وارد کنید، ذخیره می‌شود):';
+        const srvInput = document.createElement('input');
+        srvInput.id = 'dw-server-input';
+        srvInput.dir = 'ltr';
+        srvInput.placeholder = 'https://dw-sync.xxxxx.workers.dev';
+        let savedSrv = '';
+        try { savedSrv = localStorage.getItem('dw_server_url') || ''; } catch {}
+        srvInput.value = savedSrv || (SYNC_SERVER_URL || '');
+        srvInput.style.cssText = S.input;
+        const srvSave = document.createElement('button');
+        srvSave.innerHTML = '💾 ذخیرهٔ آدرس سرور';
+        srvSave.style.cssText = S.btn('#50fa7b') + 'width:100%;margin-top:8px;';
+        srvBox.appendChild(srvLabel); srvBox.appendChild(srvInput); srvBox.appendChild(srvSave);
+        panelEl.appendChild(srvBox);
+
+        // اگر هنوز آدرسی تنظیم نشده، این کادر را باز نگه دار تا کاربر پر کند
+        if (!serverBase()) srvBox.style.display = 'block';
+        else srvBox.style.display = 'none';
+        srvSave.onclick = () => {
+            let v = (srvInput.value || '').trim().replace(/\/+$/, '');
+            if (!/^https?:\/\//i.test(v)) { setStatus('❌ آدرس باید با https:// شروع شود', '#ff5555'); return; }
+            try { localStorage.setItem('dw_server_url', v); } catch {}
+            srvBox.style.display = 'none';
+            flash(srvSave, '✅ ذخیره شد');
+            setStatus('✅ آدرس سرور ذخیره شد — حالا «ایجاد لینک» یا «ورود با کد» را بزنید', '#50fa7b');
+        };
+
         // --- دکمه‌های ایجاد / پیوستن ---
         const row = document.createElement('div');
         row.style.cssText = `display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:10px;`;
@@ -421,12 +543,20 @@
     function closeBoxes() {
         const lb = document.getElementById('dw-link-box');
         const jb = document.getElementById('dw-join-box');
+        const sb = document.getElementById('dw-server-box');
         if (lb) lb.style.display = 'none';
         if (jb) jb.style.display = 'none';
+        if (sb && serverBase()) sb.style.display = 'none';
     }
 
     function openCreateDialog() {
         buildUI();
+        if (!serverBase()) {
+            const sb = document.getElementById('dw-server-box');
+            if (sb) { sb.style.display = 'block'; sb.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+            setStatus('❌ اول آدرس سرور (Worker) را در کادر سبز بالا وارد و ذخیره کنید', '#ff5555');
+            return;
+        }
         const code = genCode();
         try { sessionStorage.setItem('dw_host_video_href', location.href); } catch {}
         const linkInput = document.getElementById('dw-link-input');
@@ -440,6 +570,12 @@
 
     function openJoinDialog() {
         buildUI();
+        if (!serverBase()) {
+            const sb = document.getElementById('dw-server-box');
+            if (sb) { sb.style.display = 'block'; sb.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+            setStatus('❌ اول آدرس سرور (Worker) را در کادر بالا وارد و ذخیره کنید', '#ff5555');
+            return;
+        }
         document.getElementById('dw-join-box').style.display = 'block';
         document.getElementById('dw-link-box').style.display = 'none';
         const ci = document.getElementById('dw-code-input');
@@ -495,80 +631,54 @@
     }
 
     // ---------- صفحهٔ فرود Join (روی دامنهٔ Worker) ----------
-    // وقتی دوست لینک اشتراک را باز می‌کند، double-watch.js (به‌عنوان content script
-    // روی <all_urls>) این صفحهٔ زیبا را می‌سازد؛ سپس با کلیک روی دکمه، تب در همان
-    // لحظه به صفحهٔ ویدیو هدایت می‌شود و کد اتاق + رمز دقیقاً پیش از ناوبری در
-    // sessionStorage دامنهٔ مقصد نوشته می‌شوند تا ورود خودکار انجام شود.
-    function renderJoinLanding() {
-        const code = location.hash.slice(1).toUpperCase();
-        const params = new URLSearchParams(location.search);
-        const v = params.get('v');
-        const target = (v && /^https?:\/\//i.test(v)) ? v : null;
-
-        document.documentElement.innerHTML = `
-        <head><meta charset="utf-8"><title>دابل‌واچ — پیوستن</title></head>
-        <body style="margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#1a1a2e,#16213e);font-family:'Segoe UI',Tahoma,Arial,sans-serif;color:#f8f8f2;direction:rtl;">
-          <div style="background:rgba(15,15,35,.92);backdrop-filter:blur(16px);border:1px solid rgba(255,255,255,.08);border-radius:20px;padding:34px 40px;max-width:440px;width:90%;box-shadow:0 12px 48px rgba(0,0,0,.6);text-align:center;">
-            <div style="font-size:44px;">🎬👥</div>
-            <h2 style="margin:12px 0 4px;color:#bd93f9;">حالت دابل‌واچ</h2>
-            <p style="color:#6272a4;font-size:13px;line-height:2;margin:8px 0 18px;">
-              کد اتاق شما:
-              <span dir="ltr" style="display:inline-block;background:rgba(189,147,249,.15);color:#bd93f9;font-weight:800;letter-spacing:3px;padding:4px 14px;border-radius:8px;font-size:18px;">${code}</span>
-            </p>
-            <div id="info" style="font-size:12px;color:#8be9fd;margin-bottom:18px;line-height:2;"></div>
-            <button id="goBtn" style="width:100%;padding:14px;border:none;border-radius:12px;font-size:15px;font-weight:800;cursor:pointer;background:linear-gradient(135deg,#bd93f9,#ff79c6);color:#1a1a2e;box-shadow:0 8px 24px rgba(189,147,249,.35);">${target ? '➜ ورود به انیمه و شروع تماشا' : '➜ صفحهٔ پخش انیمه را باز کنید'}</button>
-            <p style="font-size:11px;color:#6272a4;margin-top:16px;line-height:2;">
-              ⚠️ هر دو نفر باید مرورگری داشته باشند که
-              <b style="color:#50fa7b;">اکستنشن روی آن نصب است</b>.
-              ${target ? 'با کلیک روی دکمه، این تب به صفحهٔ انیمه می‌رود و اکستنشن به‌طور خودکار وارد اتاق می‌شود.' : 'لینک باید آدرس صفحهٔ ویدیو (v=...) را داشته باشد.'}
-            </p>
-          </div>
-        </body>`;
-
-        const info = document.getElementById('info');
-        const extMissing = !(typeof chrome === 'object' && chrome?.runtime?.getURL);
-        if (extMissing) {
-            info.innerHTML = '⚠️ به نظر می‌رسد اکستنشن روی این مرورگر نصب نیست!<br>آن را نصب کنید و دوباره لینک را باز کنید.';
-            info.style.color = '#ff5555';
-        } else {
-            info.textContent = 'اکستنشن شناسایی شد ✓';
-        }
-
-        document.getElementById('goBtn').onclick = () => {
-            if (!target) {
-                info.innerHTML += '<br>ℹ️ در تب دیگری صفحهٔ پخش انیمه را باز کنید و از پنل اکستنشن «ورود با کد» را بزنید (کد: ' + code + ').';
-                return;
-            }
-            // نوشتن کد در sessionStorage دامنهٔ مقصد، دقیقاً پیش از ناوبری —
-            // هم‌ارز same-origin commit و بنابراین ورود خودکار تضمین می‌شود.
+    // double-watch.js به‌عنوان content script روی <all_urls> اجرا می‌شود.
+    // اگر لینک دابل‌واچ روی دامنهٔ Worker باز شود:
+    //   • بدون v  → ورود خودکار به اتاق همین‌جا (اتاق فقط برای چت وضعیت است)
+    //   • با v    → پنل تأیید نمایش داده می‌شود؛ با کلیک، تب به صفحهٔ ویدیو
+    //               رفته و کد/رمز در sessionStorage مقصد نوشته می‌شود تا
+    //               ورود خودکار انجام شود.
+    function showLandingConfirm(code, target) {
+        const box = document.createElement('div');
+        box.id = 'dw-landing-confirm';
+        box.style.cssText = `position:fixed;inset:auto 16px 16px auto;z-index:2147483647;direction:rtl;background:rgba(15,15,35,.97);border:1px solid rgba(189,147,249,.4);border-radius:16px;padding:20px 22px;max-width:380px;font-family:'Segoe UI',Tahoma,Arial,sans-serif;color:#f8f8f2;box-shadow:0 12px 48px rgba(0,0,0,.7);`;
+        box.innerHTML = `
+          <div style="font-size:30px;">🎬👥</div>
+          <h3 style="margin:6px 0;color:#bd93f9;font-size:15px;">دابل‌واچ — کد ${code}</h3>
+          <p style="font-size:12px;color:#8be9fd;line-height:2;margin:8px 0;">${target ? 'برای تماشای همزمان، این تب به صفحهٔ انیمه می‌رود و اکستنشن خودکار وارد اتاق می‌شود.' : 'اتصال به اتاق برقرار شد ✓ حالا صفحهٔ پخش انیمه را باز کنید و از پنل «ورود با کد» همین کد را بزنید.'}</p>
+          ${target ? `<button id="dw-go" style="width:100%;padding:12px;border:none;border-radius:10px;font-size:14px;font-weight:800;cursor:pointer;background:linear-gradient(135deg,#bd93f9,#ff79c6);color:#1a1a2e;">➜ ورود به انیمه و شروع تماشا</button>` : ''}
+          <button id="dw-close" style="width:100%;margin-top:8px;padding:8px;border:1px solid rgba(255,255,255,.15);border-radius:10px;font-size:12px;cursor:pointer;background:transparent;color:#6272a4;">بستن</button>`;
+        document.documentElement.appendChild(box);
+        const closeBtn = box.querySelector('#dw-close');
+        closeBtn && closeBtn.addEventListener('click', () => box.remove());
+        const goBtn = box.querySelector('#dw-go');
+        goBtn && goBtn.addEventListener('click', () => {
             try {
-                const origin = new URL(target).origin;
-                const probe = sessionStorage.getItem('__dw_probe__');
-                sessionStorage.clear();
                 sessionStorage.setItem('dw_autojoin', JSON.stringify({ code, pass: '', ts: Date.now() }));
-                const saved = sessionStorage.getItem('dw_autojoin');
-                sessionStorage.clear();
-                if (probe !== null) sessionStorage.setItem('__dw_probe__', probe);
-                if (saved) {
-                    sessionStorage.setItem('dw_autojoin', saved);
-                    location.replace(target);
-                } else {
-                    throw new Error('storage unavailable');
-                }
-            } catch (err) {
-                // اگر sessionStorage مسدود بود، حداقل همین‌جا ذخیره و هدایت کن
-                try { sessionStorage.setItem('dw_autojoin', JSON.stringify({ code, pass: '', ts: Date.now() })); } catch {}
-                location.href = target;
-            }
-        };
+            } catch {}
+            location.href = target;
+        });
     }
 
     if (/^#([A-Z0-9]{4,8})$/i.test(location.hash)) {
-        if (/^https?:$/.test(location.protocol) && /\.workers\.dev$/.test(location.hostname)) {
-            renderJoinLanding();
+        const isWorkerPage = /^https?:$/.test(location.protocol) && /\.workers\.dev$/.test(location.hostname);
+        const code = location.hash.slice(1).toUpperCase();
+        let v = null;
+        try {
+            const vv = new URLSearchParams(location.search).get('v');
+            if (vv && /^https?:\/\//i.test(vv)) v = vv;
+        } catch {}
+
+        if (isWorkerPage) {
+            if (!v) {
+                // ورود خودکار مستقیم به اتاق — بدون هیچ کلیکی
+                autoJoinFromWorkerLanding();
+            } else {
+                // لینک آدرس ویدیو را دارد: اول وصل شو، بعد کاربر را هدایت کن
+                autoJoinFromWorkerLanding();
+                showLandingConfirm(code, v);
+            }
         } else {
             // ما روی دامنهٔ Worker نیستیم: کد را برای ورود خودکار ذخیره کن
-            const code = location.hash.slice(1).toUpperCase();
             try { sessionStorage.setItem('dw_autojoin', JSON.stringify({ code, pass: '', ts: Date.now() })); } catch {}
             // اگر پنل اکستنشن در همین صفحه باز باشد، فرم ورود کد را پر کن
             toMain({ action: 'DW_JOIN_PREFILL', code });

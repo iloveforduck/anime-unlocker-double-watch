@@ -16,7 +16,7 @@
     "resources": ["main.js", "icon.svg"],
     "matches": ["<all_urls>"]
   }],
-  "host_permissions": ["wss://*/*"],
+  "host_permissions": ["wss://*/*", "http://*/*", "https://*/*"],
   "icons": {
     "16": "icon.svg",
     "48": "icon.svg",
