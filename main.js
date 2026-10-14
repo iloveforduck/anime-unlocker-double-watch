@@ -120,6 +120,15 @@
                 dw.role = null;
                 updateUI();
                 break;
+            case 'DW_META':
+                // عنوان/آدرس صفحهٔ طرف مقابل (برای نمایش در آینده)
+                break;
+            case 'DW_JOIN_INFO':
+                // double-watch.js اطلاعات پلیر محلی را می‌خواهد
+                if (video) {
+                    toExt({ action: 'DW_JOIN_INFO', currentTime: video.currentTime });
+                }
+                break;
         }
     }
     document.addEventListener('DW_EXT_MSG', dwHandleMsg);
@@ -166,6 +175,27 @@
         sec.style.cssText = `display:none;margin-bottom:14px;padding:10px 12px;background:rgba(189,147,249,0.06);border:1px solid rgba(189,147,249,0.15);border-radius:10px;`;
         parent.appendChild(sec);
     }
+
+    // ---------- صفحهٔ فرود Join (تب دوم مهمان) ----------
+    // وقتی دوست لینک اشتراک را باز می‌کند، double-watch.js این صفحه را در همان
+    // تب نمایش می‌دهد و کد اتاق را از هَش استخراج می‌کند. ما اینجا فقط آن را
+    // به form ورود کد منتقل می‌کنیم تا کاربر با یک Enter وارد شود.
+    document.addEventListener('DW_EXT_MSG', (e) => {
+        const m = (e && e.detail) || {};
+        if (m.action === 'DW_JOIN_PREFILL' && m.code) {
+            const section = document.getElementById('adv-dw-section');
+            if (section) section.style.display = 'block';
+            setTimeout(() => {
+                const ci = document.getElementById('dw-code-input');
+                if (ci) {
+                    ci.value = m.code;
+                    ci.focus();
+                    const go = document.getElementById('dw-join-go');
+                    if (go) go.click();
+                }
+            }, 400);
+        }
+    });
 
     // ===== تشخیص قفل =====
     function isLocked() {

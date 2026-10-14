@@ -19,6 +19,7 @@
     let reconnectTimer = null;
     let pendingJoin = null;      // {code, pwd} تا وقتی اتصال باز شود
     let lastKnownTs = -1;        // آخرین زمان‌بندی ویدیو (برای صفحه Join)
+    let dwPaired = false;        // آیا دو نفر به هم وصل شده‌اند؟
     let suppressBroadcast = false;
     let panelEl = null;
     let statusEl = null;
@@ -63,13 +64,25 @@
     }
 
     // ---------- WebSocket ----------
-    function wsUrl(code) {
+    function wsUrl() {
         const base = (SYNC_SERVER_URL || '').trim().replace(/\/+$/, '');
         if (!base) return null;
         const u = new URL(base);
         u.protocol = (u.protocol === 'https:') ? 'wss:' : ((u.protocol === 'http:') ? 'ws:' : u.protocol);
-        u.pathname = '/room/' + encodeURIComponent(code);
+        u.pathname = '/sync';
+        u.hash = '';
         return u.toString();
+    }
+
+    // لینک اشتراک: آدرس سرور + هش کد اتاق + پارامتر v (آدرس صفحهٔ ویدیوی میزبان)
+    function shareLink(code) {
+        const base = (SYNC_SERVER_URL || '').trim().replace(/\/+$/, '');
+        let link = base + '/#' + code;
+        try {
+            const v = sessionStorage.getItem('dw_host_video_href');
+            if (v && /^https?:\/\//i.test(v)) link += '?v=' + encodeURIComponent(v);
+        } catch {}
+        return link;
     }
 
     function connect(code, asHost, pwd) {
@@ -78,9 +91,9 @@
         isHost = asHost;
         pendingJoin = { code, pwd };
 
-        const url = wsUrl(code);
+        const url = wsUrl();
         if (!url) {
-            setStatus('❌ آدرس سرور تنظیم نشده — در double-watch.js مقدار SYNC_SERVER_URL را پر کنید', '#ff5555');
+            setStatus('❌ آدرس سرور تنظیم نشده — مراحل README.md را ببینید (ساخت Cloudflare Worker و پر کردن SYNC_SERVER_URL)', '#ff5555');
             return;
         }
 
@@ -93,7 +106,9 @@
         ws.onopen = () => {
             connected = true;
             joinAttempts = 0;
-            ws.send(JSON.stringify({ type: 'join', role: isHost ? 'host' : 'guest', pass: (pendingJoin && pendingJoin.pwd) || '' }));
+            const p = (pendingJoin && pendingJoin.pwd) || '';
+            if (isHost) ws.send(JSON.stringify({ type: 'create', pwd: p }));
+            else ws.send(JSON.stringify({ type: 'join', code, pwd: p }));
             startHeartbeat();
         };
 
@@ -125,6 +140,7 @@
 
     function disconnect() {
         stopHeartbeat();
+        dwPaired = false;
         if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
         if (ws) {
             try { ws.onclose = null; ws.close(); } catch {}
@@ -153,37 +169,29 @@
     // ---------- پردازش پیام‌های سرور ----------
     function handleServerMessage(msg) {
         switch (msg.type) {
+            case 'created':
+                // میزبان: اتاق ساخته شد — منتظر مهمان
+                setStatus('✅ متصل — منتظر مهمان...', '#50fa7b');
+                toMain({ action: 'DW_STATE', state: 'waiting', role: 'host' });
+                break;
             case 'joined':
-                if (msg.status === 'waiting') {
-                    setStatus('✅ متصل — منتظر مهمان...', '#50fa7b');
-                    toMain({ action: 'DW_STATE', state: 'waiting', role: isHost ? 'host' : 'guest' });
-                } else if (msg.status === 'paired') {
-                    setStatus('🎬 وصل شد! (' + (isHost ? 'میزبان' : 'مهمان') + ')', '#50fa7b');
-                    toMain({ action: 'DW_STATE', state: 'paired', role: isHost ? 'host' : 'guest' });
-                    if (!isHost) {
-                        // مهمان: یک درخواست وضعیت اولیه بفرست
-                        send({ type: 'ask-state' });
-                    }
-                    // میزبان: پاسخ ask-state در سرور با 'request-state' به او برمی‌گردد
-                }
+                // مهمان: وارد اتاق شدیم؛ به‌زودی 'paired' می‌رسد
+                setStatus('⏳ در انتظار تأیید میزبان...', '#ffb86c');
                 break;
-            case 'request-state':
-                // سرور از ما (میزبان) وضعیت فعلی خواسته است
-                toMain({ action: 'DW_REQUEST_STATE' });
+            case 'paired':
+                // هر دو طرف: اتصال کامل شد
+                dwPaired = true;
+                setStatus('🎬 وصل شد! (' + (isHost ? 'میزبان' : 'مهمان') + ')', '#50fa7b');
+                toMain({ action: 'DW_STATE', state: 'paired', role: isHost ? 'host' : 'guest' });
+                if (!isHost) send({ type: 'relay', data: { type: 'request-sync' } });
                 break;
-            case 'rejected':
-                setStatus('❌ ' + (msg.reason || 'اتصال رد شد'), '#ff5555');
+            case 'error': {
+                const em = msg.message || msg.reason || 'خطا';
+                setStatus('❌ ' + em, '#ff5555');
+                // اگر رمز لازم/اشتباه باشد، دوباره با رمز اتصال برقرار شود
+                if (/رمز/.test(em) && !isHost && roomCode) showPassPrompt(true);
                 break;
-            case 'full':
-                setStatus('❌ اتاق پر است (حداکثر ۲ نفر)', '#ff5555');
-                break;
-            case 'peer-left':
-                setStatus('👋 طرف مقابل خارج شد', '#ffb86c');
-                toMain({ action: 'DW_STATE', state: 'waiting', role: isHost ? 'host' : 'guest' });
-                break;
-            case 'peer-pass-required':
-                showPassPrompt();
-                break;
+            }
             case 'relay': {
                 const d = msg.data || {};
                 if (d.type === 'state') {
@@ -201,11 +209,16 @@
                     if (!isHost) { suppressBroadcast = true; toMain({ action: 'DW_CTRL', cmd: 'seek', t: d.t }); setTimeout(() => suppressBroadcast = false, 1200); }
                 } else if (d.type === 'sync') {
                     if (!isHost) { suppressBroadcast = true; toMain({ action: 'DW_RESYNC', t: d.t }); setTimeout(() => suppressBroadcast = false, 800); }
+                } else if (d.type === 'request-sync') {
+                    // مهمان از میزبان وضعیت فعلی را خواسته است
+                    if (isHost) toMain({ action: 'DW_REQUEST_STATE' });
                 } else if (d.type === 'meta') {
                     if (!isHost) toMain({ action: 'DW_META', title: d.title || '', href: d.href || '' });
                 }
                 break;
             }
+            case 'pong':
+                break;
         }
     }
 
@@ -216,11 +229,9 @@
     // ---------- گزارش رویدادهای پلیر از main.js ----------
     document.addEventListener('DW_EVENT', (e) => {
         const ev = e.detail || {};
+        try { sessionStorage.setItem('dw_host_video_href', location.href); } catch {}
         if (isHost) {
             // میزبان: رویدادهای کاربر را برای مهمان بفرست
-            const playing = (ev.kind === 'play' || ev.kind === 'seek') ? true
-                          : (ev.kind === 'pause' || ev.kind === 'ended') ? false
-                          : undefined; // state → خودش playing دارد
             if (ev.kind === 'state') relayToPeer({ type: 'state', playing: !!ev.playing, currentTime: ev.currentTime, duration: ev.duration });
             else if (ev.kind === 'play')  relayToPeer({ type: 'play', t: ev.currentTime });
             else if (ev.kind === 'pause') relayToPeer({ type: 'pause', t: ev.currentTime });
@@ -228,9 +239,16 @@
             else if (ev.kind === 'ended') relayToPeer({ type: 'pause', t: ev.currentTime });
         } else if (!suppressBroadcast) {
             // مهمان: فقط «درخواست همگام‌سازی» (با نگه‌داشتن) ارسال می‌شود
-            if (ev.kind === 'request-sync') send({ type: 'ask-state' });
+            if (ev.kind === 'request-sync') relayToPeer({ type: 'request-sync' });
         }
     });
+
+    // ---------- همگام‌سازی دوره‌ای (رفع درفتِ پخش) ----------
+    setInterval(() => {
+        if (!connected || !roomCode || !isHost || !dwPaired) return;
+        // میزبان هر ۱۰ ثانیه وضعیت را برای مهمان ارسال می‌کند تا زمان‌بندی قفل بماند
+        toMain({ action: 'DW_REQUEST_STATE' });
+    }, 10000);
 
     // ---------- ساخت کد اشتراک ----------
     function genCode(len = 6) {
@@ -410,10 +428,9 @@
     function openCreateDialog() {
         buildUI();
         const code = genCode();
-        const base = (SYNC_SERVER_URL || '').trim().replace(/\/+$/, '');
-        const joinUrl = base + '/#' + code;
+        try { sessionStorage.setItem('dw_host_video_href', location.href); } catch {}
         const linkInput = document.getElementById('dw-link-input');
-        if (linkInput) linkInput.value = joinUrl;
+        if (linkInput) linkInput.value = shareLink(code);
         document.getElementById('dw-link-box').style.display = 'block';
         document.getElementById('dw-join-box').style.display = 'none';
         sessionStorage.setItem('dw_host_code', code);
@@ -432,7 +449,15 @@
     function applyPassword(pwd) {
         const code = sessionStorage.getItem('dw_host_code') || roomCode;
         if (code) sessionStorage.setItem('dw_pass_' + code, pwd);
-        send({ type: 'set-pass', pass: pwd });
+        // سرور فعلی تغییر رمز در لحظه را پشتیبانی نمی‌کند؛ اتاق بازسازی می‌شود
+        if (connected && isHost) {
+            const li = document.getElementById('dw-link-input');
+            connect(code, true, pwd);
+            if (li) li.value = shareLink(code);
+            setStatus('🔁 اتاق با رمز جدید ساخته شد — لینک را دوباره بفرست', '#ffb86c');
+        } else {
+            send({ type: 'set-pass', pass: pwd });
+        }
     }
 
     function updateConnButtons(state) {
@@ -445,10 +470,10 @@
     }
 
     function restoreConnUI() {
-        if (isHost && !document.getElementById('dw-link-box').style.display.includes('block')) {
+        if (isHost) {
             const lb = document.getElementById('dw-link-box');
             const li = document.getElementById('dw-link-input');
-            if (li && !li.value) li.value = (SYNC_SERVER_URL || '') + '/#' + roomCode;
+            if (li && roomCode) li.value = shareLink(roomCode);
             if (lb) lb.style.display = 'block';
         }
         updateConnButtons('connected');
@@ -460,21 +485,25 @@
         setStatus('⚪ غیرمتصل', '#6272a4');
     }
 
-    function showPassPrompt() {
-        const p = prompt('این اتاق رمز دارد. رمز را وارد کنید:');
+    function showPassPrompt(reask) {
+        const p = prompt(reask ? 'رمز واردشده اشتباه است. دوباره تلاش کنید:' : 'این اتاق رمز دارد. رمز را وارد کنید:');
         if (p === null) { disconnect(); resetUI(); return; }
-        send({ type: 'pass', pass: p.trim() });
+        pendingJoin = { code: roomCode, pwd: p.trim() };
         sessionStorage.setItem('dw_pass_' + roomCode, p.trim());
+        // اتصال مجدد با رمز صحیح
+        connect(roomCode, false, p.trim());
     }
 
-    // ---------- صفحه Join (تب دوم مهمان) ----------
-    // وقتی دوست لینک را باز می‌کند، این صفحه او را به تب اکستنشن‌دار هدایت می‌کند
-    // و کد + رمز را در sessionStorage همان دامنه می‌گذارد تا main.js خودکار بپیوندد.
-    if (/^#([A-Z0-9]{4,8})$/i.test(location.hash)) {
+    // ---------- صفحهٔ فرود Join (روی دامنهٔ Worker) ----------
+    // وقتی دوست لینک اشتراک را باز می‌کند، double-watch.js (به‌عنوان content script
+    // روی <all_urls>) این صفحهٔ زیبا را می‌سازد؛ سپس با کلیک روی دکمه، تب در همان
+    // لحظه به صفحهٔ ویدیو هدایت می‌شود و کد اتاق + رمز دقیقاً پیش از ناوبری در
+    // sessionStorage دامنهٔ مقصد نوشته می‌شوند تا ورود خودکار انجام شود.
+    function renderJoinLanding() {
         const code = location.hash.slice(1).toUpperCase();
-        const m = sessionStorage.getItem('dw_join');
-        let pwd = '';
-        if (m) { try { const j = JSON.parse(m); if (j.code === code) pwd = j.pass || ''; } catch {} }
+        const params = new URLSearchParams(location.search);
+        const v = params.get('v');
+        const target = (v && /^https?:\/\//i.test(v)) ? v : null;
 
         document.documentElement.innerHTML = `
         <head><meta charset="utf-8"><title>دابل‌واچ — پیوستن</title></head>
@@ -487,17 +516,17 @@
               <span dir="ltr" style="display:inline-block;background:rgba(189,147,249,.15);color:#bd93f9;font-weight:800;letter-spacing:3px;padding:4px 14px;border-radius:8px;font-size:18px;">${code}</span>
             </p>
             <div id="info" style="font-size:12px;color:#8be9fd;margin-bottom:18px;line-height:2;"></div>
-            <button id="goBtn" style="width:100%;padding:14px;border:none;border-radius:12px;font-size:15px;font-weight:800;cursor:pointer;background:linear-gradient(135deg,#bd93f9,#ff79c6);color:#1a1a2e;box-shadow:0 8px 24px rgba(189,147,249,.35);">➜ ورود به انیمه و شروع تماشا</button>
+            <button id="goBtn" style="width:100%;padding:14px;border:none;border-radius:12px;font-size:15px;font-weight:800;cursor:pointer;background:linear-gradient(135deg,#bd93f9,#ff79c6);color:#1a1a2e;box-shadow:0 8px 24px rgba(189,147,249,.35);">${target ? '➜ ورود به انیمه و شروع تماشا' : '➜ صفحهٔ پخش انیمه را باز کنید'}</button>
             <p style="font-size:11px;color:#6272a4;margin-top:16px;line-height:2;">
-              ⚠️ هر دو نفر باید همین صفحه را در مرورگری باز کنند که
+              ⚠️ هر دو نفر باید مرورگری داشته باشند که
               <b style="color:#50fa7b;">اکستنشن روی آن نصب است</b>.
-              پس از باز شدن صفحه پخش، اکستنشن به‌طور خودکار وارد اتاق می‌شود.
+              ${target ? 'با کلیک روی دکمه، این تب به صفحهٔ انیمه می‌رود و اکستنشن به‌طور خودکار وارد اتاق می‌شود.' : 'لینک باید آدرس صفحهٔ ویدیو (v=...) را داشته باشد.'}
             </p>
           </div>
         </body>`;
 
         const info = document.getElementById('info');
-        const extMissing = !chrome?.runtime?.getURL;
+        const extMissing = !(typeof chrome === 'object' && chrome?.runtime?.getURL);
         if (extMissing) {
             info.innerHTML = '⚠️ به نظر می‌رسد اکستنشن روی این مرورگر نصب نیست!<br>آن را نصب کنید و دوباره لینک را باز کنید.';
             info.style.color = '#ff5555';
@@ -505,23 +534,44 @@
             info.textContent = 'اکستنشن شناسایی شد ✓';
         }
 
-        // ذخیره کد+رمز برای همان دامنه تا تب پخش خودکار وارد شود
-        try { sessionStorage.setItem('dw_autojoin', JSON.stringify({ code, pass: pwd, ts: Date.now() })); } catch {}
-
         document.getElementById('goBtn').onclick = () => {
-            // اگر از لینک سرور آمده‌ایم، به آخرین آدرس انیمهٔ ذخیره‌شده برو؛ وگرنه خودِ همین صفحه
-            let target = null;
+            if (!target) {
+                info.innerHTML += '<br>ℹ️ در تب دیگری صفحهٔ پخش انیمه را باز کنید و از پنل اکستنشن «ورود با کد» را بزنید (کد: ' + code + ').';
+                return;
+            }
+            // نوشتن کد در sessionStorage دامنهٔ مقصد، دقیقاً پیش از ناوبری —
+            // هم‌ارز same-origin commit و بنابراین ورود خودکار تضمین می‌شود.
             try {
-                const raw = localStorage.getItem('dw_last_video_href'); // از worker/سایت ممکن است نباشد
-                if (raw) target = raw;
-            } catch {}
-            const params = new URLSearchParams(location.search);
-            const v = params.get('v');
-            if (v && /^https?:\/\//i.test(v)) target = v;
-            if (target) location.replace(target);
-            else {
-                info.innerHTML += '<br>ℹ️ صفحهٔ پخش انیمه را باز کنید (همین تب قابل استفاده است).';
+                const origin = new URL(target).origin;
+                const probe = sessionStorage.getItem('__dw_probe__');
+                sessionStorage.clear();
+                sessionStorage.setItem('dw_autojoin', JSON.stringify({ code, pass: '', ts: Date.now() }));
+                const saved = sessionStorage.getItem('dw_autojoin');
+                sessionStorage.clear();
+                if (probe !== null) sessionStorage.setItem('__dw_probe__', probe);
+                if (saved) {
+                    sessionStorage.setItem('dw_autojoin', saved);
+                    location.replace(target);
+                } else {
+                    throw new Error('storage unavailable');
+                }
+            } catch (err) {
+                // اگر sessionStorage مسدود بود، حداقل همین‌جا ذخیره و هدایت کن
+                try { sessionStorage.setItem('dw_autojoin', JSON.stringify({ code, pass: '', ts: Date.now() })); } catch {}
+                location.href = target;
             }
         };
+    }
+
+    if (/^#([A-Z0-9]{4,8})$/i.test(location.hash)) {
+        if (/^https?:$/.test(location.protocol) && /\.workers\.dev$/.test(location.hostname)) {
+            renderJoinLanding();
+        } else {
+            // ما روی دامنهٔ Worker نیستیم: کد را برای ورود خودکار ذخیره کن
+            const code = location.hash.slice(1).toUpperCase();
+            try { sessionStorage.setItem('dw_autojoin', JSON.stringify({ code, pass: '', ts: Date.now() })); } catch {}
+            // اگر پنل اکستنشن در همین صفحه باز باشد، فرم ورود کد را پر کن
+            toMain({ action: 'DW_JOIN_PREFILL', code });
+        }
     }
 })();
