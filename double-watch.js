@@ -72,12 +72,23 @@
         return false;
     }
 
-    // ---------- صفحهٔ فرود Worker: ورود خودکار با کد از هَش ----------
+    // ---------- صفحهٔ فرود Worker: ورود خودکار با کد از لینک ----------
+    // کد اتاق می‌تواند در ?c=CODE (لینک جدید)، ?join=CODE یا #CODE (لینک قدیمی) باشد.
+    function getLandingCode() {
+        try {
+            const usp = new URLSearchParams(location.search);
+            const c = (usp.get('c') || usp.get('join') || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+            if (/^[A-Z0-9]{4,8}$/.test(c)) return c;
+        } catch {}
+        const m = location.hash.match(/^#([A-Za-z0-9]{4,8})$/);
+        if (m) return m[1].toUpperCase();
+        return null;
+    }
+
     function autoJoinFromWorkerLanding() {
         if (!isWorkerLandingPage()) return false;
-        const m = location.hash.match(/^#([A-Za-z0-9]{4,8})$/);
-        if (!m) return false;
-        const code = m[1].toUpperCase();
+        const code = getLandingCode();
+        if (!code) return false;
         // رمز از پارامتر ?p= یا sessionStorage (اگر قبلاً پرسیده شده)
         let pass = '';
         try {
@@ -85,18 +96,22 @@
             pass = usp.get('p') || sessionStorage.getItem('dw_pass_' + code) || '';
             if (!pass) pass = usp.get('pwd') || '';
         } catch { pass = ''; }
+        // کد را برای دامنهٔ ویدیو ذخیره کن تا بعد از ریدایرکت، ورود خودکار انجام شود
+        try { sessionStorage.setItem('dw_autojoin', JSON.stringify({ code, pass, ts: Date.now() })); } catch {}
         buildUI();
         connect(code, false, pass);
         updateConnButtons('connected');
         setStatus('⏳ ورود خودکار به اتاق ' + code + '...', '#ffb86c');
-        // اگر لینک، آدرس ویدیو (?v=) را داشت، بعد از برقراری اتصال خودکار منتقل شو
+        // اگر لینک، آدرس ویدیو (?v=) را داشت، بلافاصله (حداکثر ۶۰۰ms) منتقل شو.
+        // چون کد در sessionStorage ذخیره شده، روی صفحهٔ ویدیو خودکار وارد اتاق می‌شود.
         let vidTarget = null;
         try {
             const vv = new URLSearchParams(location.search).get('v');
             if (vv && /^https?:\/\//i.test(vv)) vidTarget = vv;
         } catch {}
         if (vidTarget) {
-            setTimeout(() => { location.replace(vidTarget); }, 1500);
+            setTimeout(() => { location.replace(vidTarget); }, 600);
+            return true;
         }
         // پنل را وسط صفحه نمایش بده تا کاربر بداند چه خبر است
         setTimeout(() => {
@@ -174,7 +189,7 @@
         return link;
     }
 
-    function connect(code, asHost, pwd) {
+    function connect(code, asHost, pwd, preferredCode) {
         disconnect();
         roomCode = code;
         isHost = asHost;
@@ -196,7 +211,8 @@
             connected = true;
             joinAttempts = 0;
             const p = (pendingJoin && pendingJoin.pwd) || '';
-            if (isHost) ws.send(JSON.stringify({ type: 'create', pwd: p }));
+            // میزبان کد پیشنهادی خود را می‌فرستد تا لینک نمایش‌داده‌شده همان کد واقعی اتاق باشد
+            if (isHost) ws.send(JSON.stringify({ type: 'create', pwd: p, code: preferredCode || undefined }));
             else ws.send(JSON.stringify({ type: 'join', code, pwd: p }));
             startHeartbeat();
         };
@@ -260,7 +276,15 @@
         switch (msg.type) {
             case 'created':
                 // میزبان: اتاق ساخته شد — منتظر مهمان
-                setStatus('✅ متصل — منتظر مهمان...', '#50fa7b');
+                // اگر سرور کد متفاوتی ساخت (تعارض)، لینک و کد را اصلاح می‌کنیم
+                if (msg.code && msg.code !== roomCode) {
+                    roomCode = msg.code;
+                    pendingJoin = { code: msg.code, pwd: (pendingJoin && pendingJoin.pwd) || '' };
+                    try { sessionStorage.setItem('dw_host_code', msg.code); } catch {}
+                    const li = document.getElementById('dw-link-input');
+                    if (li) li.value = shareLink(msg.code);
+                }
+                setStatus('✅ متصل — منتظر مهمان... کد اتاق: ' + roomCode, '#50fa7b');
                 toMain({ action: 'DW_STATE', state: 'waiting', role: 'host' });
                 break;
             case 'joined':
@@ -557,6 +581,9 @@
             setStatus('❌ اول آدرس سرور (Worker) را در کادر سبز بالا وارد و ذخیره کنید', '#ff5555');
             return;
         }
+        // کد اتاق را محلی تولید می‌کنیم تا لینک اشتراک «قبل از پاسخ سرور» قابل کپی باشد.
+        // اگر این کد آزاد باشد، سرور همان را می‌پذیرد؛ در غیر این صورت سرور کد جدیدی
+        // می‌سازد و پیام 'created' لینک را خودکار اصلاح می‌کند (نگام‌سازی دو لایه).
         const code = genCode();
         try { sessionStorage.setItem('dw_host_video_href', location.href); } catch {}
         const linkInput = document.getElementById('dw-link-input');
@@ -564,7 +591,7 @@
         document.getElementById('dw-link-box').style.display = 'block';
         document.getElementById('dw-join-box').style.display = 'none';
         sessionStorage.setItem('dw_host_code', code);
-        connect(code, true, sessionStorage.getItem('dw_pass_' + code) || '');
+        connect(code, true, sessionStorage.getItem('dw_pass_' + code) || '', code);
         updateConnButtons('connected');
     }
 
@@ -659,9 +686,11 @@
         });
     }
 
-    if (/^#([A-Z0-9]{4,8})$/i.test(location.hash)) {
-        const isWorkerPage = /^https?:$/.test(location.protocol) && /\.workers\.dev$/.test(location.hostname);
-        const code = location.hash.slice(1).toUpperCase();
+    // ---------- بوت استریپ صفحهٔ فرود ----------
+    // لینک‌های جدید با ?c=CODE ساخته می‌شوند (نه #CODE)؛ این بخش هر دو حالت را پوشش می‌دهد.
+    const landingCode = getLandingCode();
+    if (landingCode) {
+        const isWorkerPage = /^https?:$/.test(location.protocol) && /\.workers\.dev$/i.test(location.hostname);
         let v = null;
         try {
             const vv = new URLSearchParams(location.search).get('v');
@@ -669,19 +698,14 @@
         } catch {}
 
         if (isWorkerPage) {
-            if (!v) {
-                // ورود خودکار مستقیم به اتاق — بدون هیچ کلیکی
-                autoJoinFromWorkerLanding();
-            } else {
-                // لینک آدرس ویدیو را دارد: اول وصل شو، بعد کاربر را هدایت کن
-                autoJoinFromWorkerLanding();
-                showLandingConfirm(code, v);
-            }
+            // روی دامنهٔ Worker: اتصال + ریدایرکت سریع به صفحهٔ ویدیو (خودکار، بدون کلیک)
+            autoJoinFromWorkerLanding();
+            if (v) showLandingConfirm(landingCode, v);
         } else {
             // ما روی دامنهٔ Worker نیستیم: کد را برای ورود خودکار ذخیره کن
-            try { sessionStorage.setItem('dw_autojoin', JSON.stringify({ code, pass: '', ts: Date.now() })); } catch {}
+            try { sessionStorage.setItem('dw_autojoin', JSON.stringify({ code: landingCode, pass: '', ts: Date.now() })); } catch {}
             // اگر پنل اکستنشن در همین صفحه باز باشد، فرم ورود کد را پر کن
-            toMain({ action: 'DW_JOIN_PREFILL', code });
+            toMain({ action: 'DW_JOIN_PREFILL', code: landingCode });
         }
     }
 })();

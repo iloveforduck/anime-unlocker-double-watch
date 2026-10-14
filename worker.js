@@ -100,8 +100,10 @@ function landingHtml() {
   var vq=(params.get('v')||'').trim();
   var codeEl=document.getElementById('code'),passEl=document.getElementById('pass'),vEl=document.getElementById('vurl');
   var st=document.getElementById('st'),go=document.getElementById('go');
+  var cq=(params.get('c')||params.get('join')||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
   var m=location.hash.match(/^#([A-Za-z0-9]{4,8})$/);
-  if(m){codeEl.value=m[1].toUpperCase();document.getElementById('roomline').style.display='block';document.getElementById('roomcode').textContent=codeEl.value;}
+  var prefill=/^[A-Z0-9]{4,8}$/.test(cq)?cq:(m?m[1].toUpperCase():'');
+  if(prefill){codeEl.value=prefill;document.getElementById('roomline').style.display='block';document.getElementById('roomcode').textContent=prefill;}
   if(vq)vEl.value=vq;
   var ws=null,vid=null,hosted=false,sup=false,timer=null;
   function status(t,c){st.textContent=t;if(c)st.style.color=c;}
@@ -137,7 +139,7 @@ function landingHtml() {
     connect(code,passEl.value||'');
     setTimeout(bindVid,1500);setInterval(bindVid,3000);
   };
-  if(m)status('کد اتاق از لینک پر شد ✓ — دکمهٔ «ورود به اتاق» را بزنید.','#8be9fd');
+  if(prefill)status('کد اتاق از لینک پر شد ✓ — دکمهٔ «ورود به اتاق» را بزنید.','#8be9fd');
 })();
 </script>
 </div></body></html>`;
@@ -208,7 +210,10 @@ function handle(ws) {
 
       case 'create': {
         if (room) return; // قبلاً عضو اتاقی هستیم
-        let code = randCode();
+        // اگر میزبان کد پیشنهادی فرستاد و آزاد بود، همان را استفاده می‌کنیم
+        // تا لینک اشتراک کلاینت (که قبل از پاسخ سرور ساخته شده) معتبر بماند.
+        const wanted = String(msg.code || '').toUpperCase().trim();
+        let code = (/^[A-Z0-9]{4,8}$/.test(wanted) && !rooms.has(wanted)) ? wanted : randCode();
         while (rooms.has(code)) code = randCode();
         rooms.set(code, { host: ws, guest: null, pwd: String(msg.pwd || ''), lastTs: Date.now() });
         room = code; role = 'host';
