@@ -52,11 +52,15 @@ function closeQuietly(ws) {
   try { ws.close(1000); } catch (e) { /* noop */ }
 }
 
-// تمیزکاری دوره‌ای اتاق‌های رهاشده
-// نکته: در محیط Cloudflare Workers تابع setInterval مقدار عددی برمی‌گرداند و
-// متد unref وجود ندارد؛ این کد هم در Node و هم Workers بدون خطا کار می‌کند.
-const cleanupTimer = setInterval(() => {
+// تمیزکاری اتاق‌های رهاشده — lazy، بدون setInterval/unref
+// در Cloudflare Workers نیازی به تایمر سراسری نیست؛ هر ۵ دقیقه که یک پیام
+// جدید می‌رسد، اتاق‌های قدیمی همان‌جا پاک می‌شوند. این روش هیچ خطای TS
+// (مثل TS2339 روی unref) ایجاد نمی‌کند و کاملاً با Workers سازگار است.
+let lastCleanup = Date.now();
+function maybeCleanup() {
   const now = Date.now();
+  if (now - lastCleanup < 5 * 60 * 1000) return;
+  lastCleanup = now;
   for (const [code, r] of rooms) {
     if (now - r.lastTs > ROOM_TTL_MS) {
       closeQuietly(r.host);
@@ -64,11 +68,6 @@ const cleanupTimer = setInterval(() => {
       rooms.delete(code);
     }
   }
-}, 5 * 60 * 1000);
-
-// فقط در Node.js (برای تست محلی) تایمر را از نگه‌داشتن پروسه آزاد می‌کنیم
-if (typeof cleanupTimer === "object" && typeof cleanupTimer.unref === "function") {
-  cleanupTimer.unref();
 }
 
 // HTML حداقلی صفحهٔ فرود — double-watch.js (content script) آن را زیباسازی می‌کند.
@@ -121,6 +120,7 @@ function handle(ws) {
   ws.addEventListener('message', (ev) => {
     let msg;
     try { msg = JSON.parse(ev.data); } catch (e) { return; }
+    maybeCleanup();
     const r = room ? rooms.get(room) : null;
     if (r) r.lastTs = Date.now();
 
