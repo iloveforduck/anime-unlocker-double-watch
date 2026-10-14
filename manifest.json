@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "Video Unlocker Pro",
-  "version": "1.0.0",
-  "description": "پنل کنترل پیشرفته ویدیو با قابلیت حذف قفل",
-  "permissions": ["scripting", "activeTab", "tabs"],
+  "version": "1.1.0",
+  "description": "پنل کنترل پیشرفته ویدیو با قابلیت حذف قفل — فعال‌سازی خودکار، بدون دکمه",
+  "permissions": ["scripting", "activeTab", "tabs", "storage"],
   "background": {
     "service_worker": "background.js"
   },

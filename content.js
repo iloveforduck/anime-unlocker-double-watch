@@ -1,64 +1,45 @@
-(function createFloatingButton() {
-    if (document.getElementById('ext-activate-btn')) return;
+// ===== content script — ISOLATED world =====
+// «دکمهٔ فعال‌سازی» حذف شده است. اکستنشن خودش به‌صورت خودکار:
+//   1) main.js را از طریق background در MAIN world تزریق می‌کند
+//   2) روی SPA ها (سایت‌هایی که با جاوااسکریپت ویدیو می‌سازند) پلیر را رصد می‌کند
+(function autoActivate() {
+    if (window.__autoActivateLoaded) return;
+    window.__autoActivateLoaded = true;
 
-    const btn = document.createElement('button');
-    btn.id = 'ext-activate-btn';
-    btn.innerHTML = '🎮 فعال‌سازی';
-    btn.style.cssText = `
-        position: fixed;
-        top: 20px;
-        left: 20px;
-        z-index: 9999999;
-        padding: 12px 24px;
-        background: linear-gradient(135deg, #50fa7b, #69ff94);
-        color: #1a1a2e;
-        border: none;
-        border-radius: 12px;
-        font-size: 14px;
-        font-weight: 700;
-        cursor: pointer;
-        box-shadow: 0 8px 24px rgba(80, 250, 123, 0.4);
-        transition: all 0.3s ease;
-        font-family: 'Segoe UI', Arial, sans-serif;
-    `;
+    // پاکسازی نسخهٔ قدیمی دکمهٔ فعال‌سازی (اگر از قبل در صفحه مانده باشد)
+    const oldBtn = document.getElementById('ext-activate-btn');
+    if (oldBtn) oldBtn.remove();
 
-    btn.onmouseover = () => {
-        btn.style.transform = 'scale(1.05)';
-        btn.style.boxShadow = '0 12px 32px rgba(80, 250, 123, 0.6)';
-    };
-    btn.onmouseout = () => {
-        btn.style.transform = 'scale(1)';
-        btn.style.boxShadow = '0 8px 24px rgba(80, 250, 123, 0.4)';
-    };
+    let injected = false;
+    function requestInject() {
+        if (injected) return;
+        injected = true;
+        try {
+            chrome.runtime.sendMessage({ action: 'AUTO_INJECT' }, () => void chrome.runtime.lastError);
+        } catch (e) { injected = false; }
+    }
 
-    btn.onclick = () => {
-        btn.innerHTML = '⏳ در حال اجرا...';
-        btn.style.background = 'linear-gradient(135deg, #8be9fd, #69d2e4)';
+    function hasPlayer() {
+        return !!(document.querySelector('video') ||
+                  document.querySelector('.video-js') ||
+                  document.querySelector('.vjs-tech') ||
+                  document.querySelector('.app-video-stage'));
+    }
 
-        chrome.runtime.sendMessage({ action: 'INJECT_CODE' }, (response) => {
-            if (chrome.runtime.lastError) {
-                console.error('خطا:', chrome.runtime.lastError);
-                btn.innerHTML = '❌ خطا';
-                btn.style.background = 'linear-gradient(135deg, #ff5555, #ff6b6b)';
-                return;
-            }
+    // اگر همین حالا پلیر هست، فوراً تزریق کن؛ وگرنه صفحات بدون ویدیو دست نخورند
+    if (document.readyState === 'complete' || document.readyState === 'interactive') {
+        if (hasPlayer()) requestInject();
+    } else {
+        document.addEventListener('DOMContentLoaded', () => { if (hasPlayer()) requestInject(); });
+    }
 
-            if (response && response.success) {
-                btn.innerHTML = '✅ فعال شد';
-                btn.style.background = 'linear-gradient(135deg, #50fa7b, #69ff94)';
+    // رصد SPA: هر وقت تگ <video> اضافه شد، تزریق درخواست شود
+    const mo = new MutationObserver(() => {
+        if (!injected && hasPlayer()) requestInject();
+    });
+    function startObserver() { mo.observe(document.documentElement, { childList: true, subtree: true }); }
+    if (document.body) startObserver();
+    else document.addEventListener('DOMContentLoaded', startObserver);
 
-                setTimeout(() => {
-                    btn.style.opacity = '0';
-                    btn.style.transform = 'scale(0.8)';
-                    setTimeout(() => btn.remove(), 300);
-                }, 2000);
-            } else {
-                btn.innerHTML = '❌ ناموفق';
-                btn.style.background = 'linear-gradient(135deg, #ff5555, #ff6b6b)';
-            }
-        });
-    };
-
-    document.body.appendChild(btn);
-    console.log('🎮 دکمه فعال‌سازی اضافه شد');
+    console.log('🎮 Video Unlocker Pro: رصد خودکار فعال — بدون دکمه');
 })();

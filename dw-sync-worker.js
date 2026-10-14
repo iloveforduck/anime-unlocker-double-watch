@@ -223,10 +223,40 @@ function handle(ws) {
         break;
       }
 
+      case 'claim': {
+        // حالت چرخهٔ کلاینت‌ها: این اتصال اتاق code را در instance خودش ساخته
+        // ولی مهمانِ واقعی در instance دیگری منتظر است. اگر در این instance
+        // فقط یک مهمان معلق وجود دارد، آن را به این اتصال وصل کن.
+        if (!room || role !== 'host') return;
+        const code = String(msg.code || '').toUpperCase().trim();
+        if (code !== room) return;
+        const r = rooms.get(code);
+        if (r && r.host === ws && r.guest) {
+          const g = r.guest;
+          r.guest = null;
+          send(g, { type: 'paired', code });
+          send(ws, { type: 'paired', code });
+        }
+        break;
+      }
+
       case 'join': {
         if (room) return;
         const code = String(msg.code || '').toUpperCase().trim();
         const target = rooms.get(code);
+        // اگر خودِ همین اتصال قبلاً میزبانِ این اتاق بوده و هنوز host خالی است،
+        // جای خالی خود را پر کن (حالت چرخه) تا اشتباهاً «پر است» اعلام نشود.
+        if (target && !target.host) {
+          target.host = ws;
+          target.lastTs = Date.now();
+          room = code; role = 'host';
+          send(ws, { type: 'created', code });
+          if (target.guest) {
+            send(target.guest, { type: 'paired', code });
+            send(ws, { type: 'paired', code });
+          }
+          break;
+        }
         if (!target || !target.host) return send(ws, { type: 'error', message: 'اتاقی با این کد پیدا نشد (ممکن است میزبان خارج شده یا منقضی شده باشد).' });
         if (target.guest) return send(ws, { type: 'error', message: 'این اتاق پر است؛ فقط دو نفر می‌توانند همزمان ببینند.' });
         if (target.pwd && target.pwd !== String(msg.pwd || '')) {

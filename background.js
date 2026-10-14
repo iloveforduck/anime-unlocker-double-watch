@@ -1,24 +1,46 @@
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    if (request.action === "INJECT_CODE") {
-        chrome.scripting.executeScript({
-            target: { tabId: sender.tab.id },
+// ===== تزریق خودکار main.js در MAIN world =====
+// از این پس «دکمهٔ فعال‌سازی» وجود ندارد؛ اکستنشن خودش روی هر صفحه‌ای که
+// ویدیو دارد، main.js را به‌صورت خودکار تزریق می‌کند.
+async function injectMain(tabId) {
+    try {
+        await chrome.scripting.executeScript({
+            target: { tabId },
             files: ['main.js'],
             world: 'MAIN'
-        })
-        .then(() => {
-            console.log("✅ اسکریپت اصلی اجرا شد");
-            sendResponse({ success: true });
-        })
-        .catch((error) => {
-            console.error("❌ خطا:", error);
-            sendResponse({ success: false, error: error.message });
         });
+        console.log("✅ اسکریپت اصلی (خودکار) اجرا شد — تب", tabId);
+    } catch (e) {
+        // صفحات special مثل chrome:// ، وب‌استور و... مجاز به تزریق نیستند
+    }
+}
+
+function hasVideoMarker(srcs) {
+    return !!(srcs && srcs.some(s => /(^|\s)(video|\.video-js|\.vjs-tech|\.app-video-stage)(\s|$)/.test(s)));
+}
+
+// هنگام باز/بارگذاری شدن تب: اگر ویدیو داشت، فوراً تزریق کن
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+    if (changeInfo.status !== 'complete') return;
+    if (!/^https?:/.test(tab.url || '')) return;
+    if (hasVideoMarker(tab.scripts)) injectMain(tabId);
+});
+
+// پشتیبان: content script (double-watch.js) وقتی پلیر پیدا می‌کند، درخواست تزریق می‌دهد
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    if (request.action === "AUTO_INJECT" && sender.tab && sender.tab.id != null) {
+        injectMain(sender.tab.id);
+        sendResponse({ ok: true });
+        return;
+    }
+    // سازگاری با نسخه‌های قدیمی (پیام INJECT_CODE دیگر فرستاده نمی‌شود)
+    if (request.action === "INJECT_CODE") {
+        injectMain(sender.tab.id).then(() => sendResponse({ success: true }));
         return true;
     }
 });
 
 chrome.runtime.onInstalled.addListener(() => {
-    console.log("🎮 اکستنشن نصب شد");
+    console.log("🎮 اکستنشن نصب شد — فعال‌سازی خودکار روشن است (بدون دکمه)");
 });
 // ===== دابل‌واچ: باز کردن تب جدا برای صفحهٔ ویدیو (درخواست از double-watch.js) =====
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {

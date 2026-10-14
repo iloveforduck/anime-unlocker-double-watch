@@ -51,9 +51,12 @@
     // پس هر پیام دوباره publish می‌شود: یکی روی document (برای خودِ main.js)
     // و یکی روی window (برای double-watch.js). هر listener با فلگ globalThis
     // از پردازش تکراری جلوگیری می‌کند.
+    // ⚠️ مهم: رویدادها باید «سریال‌پذیر» باشند — شیء CustomEvent در world مقصد
+    // بازسازی می‌شود و property سفارشی مثل __dwShared منتقل نمی‌شود؛ بنابراین
+    // پرچم اشتراک‌گذاری داخل detail قرار می‌گیرد.
     function toExt(detail) {
-        const ev = new CustomEvent('DW_EXT_MSG', { detail });
-        ev.__dwShared = true;                 // نشانهٔ ارسال دوجهته
+        const d = Object.assign({ __shared: true }, detail);
+        const ev = new CustomEvent('DW_EXT_MSG', { detail: d });
         document.dispatchEvent(ev);           // برای خود main.js (MAIN world)
         try { window.dispatchEvent(ev); } catch {} // برای double-watch.js (ISOLATED world)
     }
@@ -97,9 +100,9 @@
     function dwHandleMsg(e) {
         // شنوندهٔ document فقط رویدادهای dispatch‌شده روی document را می‌بیند؛
         // اگر رویداد دوجهته (document+window) بوده و از طریق window رسیده،
-        // نسخهٔ document آن پردازش شده — رد کن تا دوباره اجرا نشود.
-        if (e.__dwShared && e.currentTarget === window) return;
+        // نسخهٔ document آن پردازش می‌شود — رد کن تا دوباره اجرا نشود.
         const m = (e && e.detail) || {};
+        if (m.__shared && e.currentTarget === window) return;
         switch (m.action) {
             case 'DW_TOGGLE':
                 // از دکمهٔ پنل (dwToggleUI) یا double-watch.js: فقط UI را آماده کن
@@ -242,7 +245,7 @@
     // تب نمایش می‌دهد و کد اتاق را از پارامتر ?c= استخراج می‌کند. ما اینجا فقط
     // آن را به form ورود کد منتقل می‌کنیم تا کاربر با یک Enter وارد شود.
     function dwPrefillHandler(e) {
-        if (e.__dwShared && e.currentTarget === window) return;
+        { const dm = (e.detail)||{}; if (dm.__shared && e.currentTarget === window) return; }
         const m = (e && e.detail) || {};
         if (m.action === 'DW_JOIN_PREFILL' && m.code) {
             const section = document.getElementById('adv-dw-section');
@@ -276,7 +279,7 @@
         };
     }
     document.addEventListener('DW_EXT_MSG', (e) => {
-        if (e.__dwShared && e.currentTarget === window) return;
+        { const dm = (e.detail)||{}; if (dm.__shared && e.currentTarget === window) return; }
         const m = (e && e.detail) || {};
         if (m.action === 'DW_STATE') {
             // بعد از هر تغییر وضعیت، نوار تب جدید موجود/روشن شود

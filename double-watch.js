@@ -40,21 +40,55 @@
         tryAutoJoinOnVideoPage();
     }, 1500);
 
+    // ---------- اطمینان از فعال بودن پلیر اکستنشن (بدون هیچ دکمه‌ای) ----------
+    // مسیر اصلی: background با شناسایی ویدیو خودش main.js را در MAIN world
+    // تزریق می‌کند. این بخش پشتیبان است: اگر پنل ساخته نشد، دوباره از
+    // background بخواه و در نهایت main.js را مستقیم در همین صفحه اجرا کن.
+    function hasPlayerEl() {
+        return !!(document.querySelector('video') || document.querySelector('.video-js') ||
+                  document.querySelector('.vjs-tech') || document.querySelector('.app-video-stage'));
+    }
+    let playerEnsured = false;
+    async function ensureExtensionPlayer() {
+        if (playerEnsured) return;
+        if (!hasPlayerEl()) return;
+        playerEnsured = true;
+        try { chrome.runtime.sendMessage({ action: 'AUTO_INJECT' }, () => void chrome.runtime.lastError); } catch {}
+        // اگر تا ۴ ثانیه بعد پنل ساخته نشد، main.js را مستقیم در همین تب اجرا کن
+        setTimeout(async () => {
+            if (document.getElementById('advanced-control-panel')) return;
+            try {
+                const code = await (await fetch(chrome.runtime.getURL('main.js'))).text();
+                // eval در MAIN world خودِ همین تب — بدون نیاز به tabId
+                const s = document.createElement('script');
+                s.textContent = code;
+                (document.head || document.documentElement).appendChild(s);
+                s.remove();
+            } catch (e) { console.warn('DW fallback inject:', e && e.message); }
+        }, 4000);
+    }
+    const dwPlayerWatch = setInterval(() => {
+        ensureExtensionPlayer();
+        if (playerEnsured && document.getElementById('advanced-control-panel')) clearInterval(dwPlayerWatch);
+    }, 2000);
+
     // ---------- پیام به main.js (MAIN world) ----------
     // CustomEvent ها بین ISOLATED/MAIN world مشترک نیستند؛ هر پیام هم روی
     // document و هم روی window dispatch می‌شود تا حتماً به main.js برسد.
     // نام رویداد DW_EXT_MSG است چون listener های main.js روی همین نام هستند.
-    // (main.js با فلگ __dwShared از پردازش تکراری جلوگیری می‌کند.)
+    // (main.js با فلگ __shared داخل detail از پردازش تکراری جلوگیری می‌کند.)
     function toMain(detail) {
-        const ev = new CustomEvent('DW_EXT_MSG', { detail });
-        ev.__dwShared = true;
+        // پرچم اشتراک داخل detail است؛ property سفارشی روی خودِ رویداد بین
+        // world ها منتقل نمی‌شود (رویداد در world مقصد بازسازی می‌شود).
+        const d = Object.assign({ __shared: true }, detail);
+        const ev = new CustomEvent('DW_EXT_MSG', { detail: d });
         document.dispatchEvent(ev);
         try { window.dispatchEvent(ev); } catch {}
     }
 
     // ---------- دریافت پیام از main.js ----------
     function dwExtHandler(e) {
-        if (e.__dwShared && e.currentTarget === window) return; // نسخهٔ document پردازش می‌شود
+        { const dm = (e.detail)||{}; if (dm.__shared && e.currentTarget === window) return; } // نسخهٔ document پردازش می‌شود
         const m = e.detail || {};
         switch (m.action) {
             case 'DW_TOGGLE':
@@ -198,6 +232,20 @@
     }
 
     // ---------- WebSocket ----------
+    // ⚠️ نکتهٔ مهم (رفع «کلان سیستم اتصال کار نمی‌کند»):
+    // Cloudflare Workers کد اتاق را در حافظهٔ هر instance نگه می‌دارد و ممکن است
+    // دو مرورگر به دو instance متفاوت وصل شوند؛ آن‌وقت پیام‌ها رد و بدل نمی‌شود.
+    // برای همین هر ۲۰ ثانیه یک اتصال تازه باز می‌شود (edge تصادفی → شانس رسیدن
+    // به instance طرف مقابل) و بعد از هر جفت‌شدن، اتصال قدیمی بسته می‌شود تا
+    // چرخه ادامه پیدا کند. چون کد اتاق پایدار است، طرف مقابل دوباره همان
+    // اتاق را پیدا می‌کند و همگام‌سازی خودکار انجام می‌شود.
+    const CYCLE_MS = 20000;
+    let cycleTimer = null;
+    let cyclingNow = false;
+    let lastAppliedTs = -1;      // آخرین نقطهٔ زمانی که از میزبان اعمال شده
+    let lastAppliedAt = 0;       // زمان محلی اعمال (برای پیش‌بینی)
+    let guestDriftTimer = null;
+
     function serverBase() {
         let base = (SYNC_SERVER_URL || '').trim().replace(/\/+$/, '');
         if (!base) { try { base = localStorage.getItem('dw_server_url') || ''; } catch {} }
@@ -212,6 +260,39 @@
         u.pathname = '/sync';
         u.hash = '';
         return u.toString();
+    }
+
+    function startCycleTimer() {
+        stopCycleTimer();
+        cycleTimer = setTimeout(() => {
+            if (!connected || !roomCode || cyclingNow) return;
+            cyclingNow = true;
+            try { if (ws) { ws.onclose = null; ws.close(); } } catch {}
+            // اتصال تازه با همان کد — رول واقعی از پاسخ سرور ('created'/'joined') مشخص می‌شود
+            connect(roomCode, isHost, (pendingJoin && pendingJoin.pwd) || '', isHost ? roomCode : undefined);
+            setTimeout(() => { cyclingNow = false; }, 3000);
+        }, CYCLE_MS + Math.floor(Math.random() * 4000)); // کمی پراکندگی تا هم‌زمان نشوند
+    }
+    function stopCycleTimer() {
+        if (cycleTimer) { clearTimeout(cycleTimer); cycleTimer = null; }
+    }
+
+    function startGuestDriftWatch() {
+        stopGuestDriftWatch();
+        guestDriftTimer = setInterval(() => {
+            if (isHost || !dwPaired || lastAppliedTs < 0) return;
+            const v = document.querySelector('video');
+            if (!v || v.paused) return;
+            const predicted = lastAppliedTs + (Date.now() - lastAppliedAt) / 1000;
+            if (Math.abs(v.currentTime - predicted) > 2.5) {
+                suppressBroadcast = true;
+                toMain({ action: 'DW_CTRL', cmd: 'seek', t: predicted });
+                setTimeout(() => { suppressBroadcast = false; }, 1200);
+            }
+        }, 6000);
+    }
+    function stopGuestDriftWatch() {
+        if (guestDriftTimer) { clearInterval(guestDriftTimer); guestDriftTimer = null; }
     }
 
     // لینک اشتراک: آدرس سرور + پارامتر c (کد اتاق) + پارامتر v (آدرس صفحهٔ ویدیوی میزبان)
@@ -231,9 +312,11 @@
     }
 
     function connect(code, asHost, pwd, preferredCode) {
+        // اگر چرخهٔ اتصال تازه در جریان است، جلوی فراخوانی‌های تودرتو را بگیر
+        if (cyclingNow && ws && ws.readyState === 1) return;
         disconnect();
         roomCode = code;
-        isHost = asHost;
+        isHost = asHost;   // حدس اولیه؛ با پاسخ سرور ('created'/'joined') اصلاح می‌شود
         pendingJoin = { code, pwd };
 
         const url = wsUrl();
@@ -266,7 +349,10 @@
 
         ws.onclose = () => {
             connected = false;
+            dwPaired = false;
             stopHeartbeat();
+            stopCycleTimer();
+            stopGuestDriftWatch();
             if (reconnectTimer) clearTimeout(reconnectTimer);
             if (joinAttempts < 6) {
                 joinAttempts++;
@@ -286,6 +372,8 @@
 
     function disconnect() {
         stopHeartbeat();
+        stopCycleTimer();
+        stopGuestDriftWatch();
         dwPaired = false;
         if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
         if (ws) {
@@ -315,9 +403,12 @@
     // ---------- پردازش پیام‌های سرور ----------
     function handleServerMessage(msg) {
         switch (msg.type) {
-            case 'created':
-                // میزبان: اتاق ساخته شد — منتظر مهمان
-                // اگر سرور کد متفاوتی ساخت (تعارض)، لینک و کد را اصلاح می‌کنیم
+            case 'created': {
+                // این اتصال اتاق را ساخته → ما میزبانیم (حتی اگر حدس اولیه غلط بوده باشد)
+                isHost = true;
+                // اگر اشتباهاً اتاقی با همان کد از قبل مهمان داشت، آن را به ما وصل کن
+                send({ type: 'claim', code: roomCode });
+                // اگر اتاق منقضی/پاک شده باشد، پیام خطا می‌رسد و دوباره create می‌کنیم
                 if (msg.code && msg.code !== roomCode) {
                     roomCode = msg.code;
                     pendingJoin = { code: msg.code, pwd: (pendingJoin && pendingJoin.pwd) || '' };
@@ -325,19 +416,25 @@
                     const li = document.getElementById('dw-link-input');
                     if (li) li.value = shareLink(msg.code);
                 }
-                setStatus('✅ متصل — منتظر مهمان... کد اتاق: ' + roomCode, '#50fa7b');
+                setStatus('✅ متصل — منتظر ورود دوست... کد اتاق: ' + roomCode, '#50fa7b');
                 toMain({ action: 'DW_STATE', state: 'waiting', role: 'host' });
+                startCycleTimer();
                 break;
+            }
             case 'joined':
-                // مهمان: وارد اتاق شدیم؛ به‌زودی 'paired' می‌رسد
+                // این اتصال با کد وارد اتاقی موجود شد → ما مهمانیم
+                isHost = false;
                 setStatus('⏳ در انتظار تأیید میزبان...', '#ffb86c');
                 break;
             case 'paired':
                 // هر دو طرف: اتصال کامل شد
                 dwPaired = true;
+                lastKnownTs = -1;
                 setStatus('🎬 وصل شد! (' + (isHost ? 'میزبان' : 'مهمان') + ')', '#50fa7b');
                 toMain({ action: 'DW_STATE', state: 'paired', role: isHost ? 'host' : 'guest' });
                 if (!isHost) send({ type: 'relay', data: { type: 'request-sync' } });
+                startCycleTimer();   // چرخهٔ اتصال تازه برای اطمینان از هم‌instance بودن
+                if (!isHost) startGuestDriftWatch();
                 break;
             case 'peer_left':
                 // طرف مقابل خارج شد — وضعیت UI در main.js به 'disconnected' می‌رود
@@ -348,8 +445,16 @@
             case 'error': {
                 const em = msg.message || msg.reason || 'خطا';
                 setStatus('❌ ' + em, '#ff5555');
-                // اگر رمز لازم/اشتباه باشد، دوباره با رمز اتصال برقرار شود
-                if (/رمز/.test(em) && !isHost && roomCode) showPassPrompt(true);
+                if (/رمز/.test(em) && !isHost && roomCode) { showPassPrompt(true); break; }
+                // در حالت چرخه: اگر اتاق پیدا نشد، ما باید اتاق را بسازیم (میزبان شویم)
+                // و اگر اتاق پر بود، ما مهمانِ اتاق موجودیم (اتاق‌مان زنده است؛ صبر کن).
+                if (cyclingNow && /پیدا نشد/.test(em)) {
+                    const p = pendingJoin;
+                    if (p) setTimeout(() => connect(p.code, true, p.pwd, p.code), 600);
+                } else if (cyclingNow && /پر است/.test(em)) {
+                    const p = pendingJoin;
+                    if (p) setTimeout(() => connect(p.code, false, p.pwd), 1200);
+                }
                 break;
             }
             case 'relay': {
@@ -357,18 +462,21 @@
                 if (d.type === 'state') {
                     // مهمان: اعمال کامل وضعیت میزبان
                     if (!isHost) {
+                        lastKnownTs = d.currentTime;
+                        lastAppliedTs = d.currentTime;
+                        lastAppliedAt = Date.now();
                         suppressBroadcast = true;
                         toMain({ action: 'DW_APPLY_STATE', playing: !!d.playing, currentTime: d.currentTime, duration: d.duration });
                         setTimeout(() => { suppressBroadcast = false; }, 1200);
                     }
                 } else if (d.type === 'play') {
-                    if (!isHost) { suppressBroadcast = true; toMain({ action: 'DW_CTRL', cmd: 'play', t: d.t }); setTimeout(() => suppressBroadcast = false, 1200); }
+                    if (!isHost) { lastAppliedTs = d.t; lastAppliedAt = Date.now(); suppressBroadcast = true; toMain({ action: 'DW_CTRL', cmd: 'play', t: d.t }); setTimeout(() => suppressBroadcast = false, 1200); }
                 } else if (d.type === 'pause') {
                     if (!isHost) { suppressBroadcast = true; toMain({ action: 'DW_CTRL', cmd: 'pause' }); setTimeout(() => suppressBroadcast = false, 1200); }
                 } else if (d.type === 'seek') {
-                    if (!isHost) { suppressBroadcast = true; toMain({ action: 'DW_CTRL', cmd: 'seek', t: d.t }); setTimeout(() => suppressBroadcast = false, 1200); }
+                    if (!isHost) { lastAppliedTs = d.t; lastAppliedAt = Date.now(); suppressBroadcast = true; toMain({ action: 'DW_CTRL', cmd: 'seek', t: d.t }); setTimeout(() => suppressBroadcast = false, 1200); }
                 } else if (d.type === 'sync') {
-                    if (!isHost) { suppressBroadcast = true; toMain({ action: 'DW_RESYNC', t: d.t }); setTimeout(() => suppressBroadcast = false, 800); }
+                    if (!isHost) { lastAppliedTs = d.t; lastAppliedAt = Date.now(); suppressBroadcast = true; toMain({ action: 'DW_RESYNC', t: d.t }); setTimeout(() => suppressBroadcast = false, 800); }
                 } else if (d.type === 'request-sync') {
                     // مهمان از میزبان وضعیت فعلی را خواسته است
                     if (isHost) toMain({ action: 'DW_REQUEST_STATE' });
@@ -388,7 +496,7 @@
 
     // ---------- گزارش رویدادهای پلیر از main.js ----------
     function dwEventHandler(e) {
-        if (e.__dwShared && e.currentTarget === window) return; // از طریق document پردازش می‌شود
+        { const dm = (e.detail)||{}; if (dm.__shared && e.currentTarget === window) return; } // از طریق document پردازش می‌شود
         const ev = e.detail || {};
         try { sessionStorage.setItem('dw_host_video_href', location.href); } catch {}
         if (isHost) {
