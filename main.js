@@ -10,7 +10,9 @@
     let checkInterval = null;
     let debounceTimer = null;
     let isModifyingDOM = false;
+    // باز کردن خودکار قفل — پیش‌فرض روشن است و ترجیح کاربر از localStorage خوانده می‌شود
     let autoUnlock = true;
+    try { autoUnlock = localStorage.getItem('adv_auto_unlock') !== '0'; } catch {}
     let isFullscreenMode = false;
     let isMinimized = false;
     let minimizedBtn = null;
@@ -497,12 +499,14 @@
     }
 
     // ===== فعال‌سازی =====
-    function activate() {
+    // حالت خودکار: اگر autoUnlock روشن باشد، بدون نیاز به کلیک روی دکمهٔ «فعال‌سازی»،
+    // قفل به‌صورت خودکار شکسته می‌شود (override روی video.play/pause هم اعمال می‌شود).
+    function activate(silent = false) {
         if (isActive) return;
 
         const currentVideo = document.querySelector('video');
         if (!currentVideo) {
-            console.warn('⚠️ ویدیو پیدا نشد');
+            if (!silent) console.warn('⚠️ ویدیو پیدا نشد');
             return;
         }
 
@@ -550,14 +554,21 @@
     }
 
     // ===== غیرفعال‌سازی =====
-    function deactivate() {
-        if (!isActive) return;
+    // manual=true یعنی کاربر خودش دکمهٔ غیرفعال‌سازی را زده؛ در این حالت
+    // autoUnlock خاموش می‌شود تا قفل دوباره خودکار فعال نشود.
+    function deactivate(manual = false) {
+        if (!isActive && !manual) return;
 
         const currentVideo = document.querySelector('video');
         if (currentVideo && originalPause && originalPlay) {
             currentVideo.pause = originalPause;
             currentVideo.play = originalPlay;
             currentVideo.pause();
+        }
+
+        if (manual) {
+            autoUnlock = false;
+            try { localStorage.setItem('adv_auto_unlock', '0'); } catch {}
         }
 
         isActive = false;
@@ -729,10 +740,12 @@
 
         switchInput.onchange = function () {
             autoUnlock = this.checked;
+            try { localStorage.setItem('adv_auto_unlock', autoUnlock ? '1' : '0'); } catch {}
             if (autoUnlock) {
                 switchSlider.style.backgroundColor = '#50fa7b';
                 switchDot.style.transform = 'translateX(20px)';
                 removeLockOverlay();
+                activate(true); // فعال‌سازی خودکار بلافاصله
             } else {
                 switchSlider.style.backgroundColor = '#44475a';
                 switchDot.style.transform = 'translateX(0)';
@@ -759,7 +772,21 @@
 
         document.body.appendChild(controlPanel);
 
-        toggleBtn.onclick = () => isActive ? deactivate() : activate();
+        toggleBtn.onclick = () => {
+            if (isActive) {
+                // کاربر دستی غیرفعال می‌کند → autoUnlock هم خاموش و ذخیره می‌شود
+                deactivate(true);
+            } else {
+                activate();
+                // اگر کاربر فعال کرد، یعنی قفل خودکار را می‌خواهد
+                if (!autoUnlock) {
+                    autoUnlock = true;
+                    try { localStorage.setItem('adv_auto_unlock', '1'); } catch {}
+                    const sw = document.querySelector('#advanced-control-panel input[type="checkbox"]');
+                    if (sw) { sw.checked = true; sw.dispatchEvent(new Event('change')); }
+                }
+            }
+        };
 
         document.getElementById('adv-play-btn').onclick = () => {
             if (!isActive) activate();
@@ -975,6 +1002,14 @@
 
             if (autoUnlock && isLocked()) {
                 removeLockOverlay();
+            }
+
+            // ===== فعال‌سازی خودکار قفل — بدون نیاز به کلیک روی دکمه =====
+            // تا وقتی سوئیچ «باز کردن خودکار قفل» روشن است، به‌محض پیدا شدن ویدیو
+            // override ها اعمال و پخش شروع می‌شود.
+            if (autoUnlock) {
+                if (!isActive) activate(true);
+                else if (video && video.paused) video.play().catch(() => {});
             }
 
             fixPlayerButtons();
