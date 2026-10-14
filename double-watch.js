@@ -61,6 +61,11 @@
                 buildUI();
                 if (!connected && !tryAutoJoin()) openCreateDialog();
                 break;
+            case 'DW_NEW_TAB': // میزبان: صفحهٔ ویدیو در تب جدید باز شود (دابل‌واچ)
+                try { sessionStorage.setItem('dw_host_video_href', location.href); } catch {}
+                openInNewTab(location.href);
+                setStatus('🗂️ صفحهٔ ویدیو در تب جدید باز شد...', '#8be9fd');
+                break;
             case 'DW_JOIN_INFO': // فقط مهمان: اطلاعات پلیر محلی برای صفحه Join
                 if (typeof m.currentTime === 'number') lastKnownTs = m.currentTime;
                 break;
@@ -139,6 +144,11 @@
     function tryAutoJoin() {
         let raw = null;
         try { raw = sessionStorage.getItem('dw_autojoin'); } catch {}
+        // تب تازه sessionStorage خالی دارد — از localStorage (همان origin) بخوان
+        if (!raw) {
+            try { raw = localStorage.getItem('dw_tabjoin_' + location.origin); } catch {}
+            if (raw) { try { localStorage.removeItem('dw_tabjoin_' + location.origin); } catch {} }
+        }
         if (!raw) return false;
         let j;
         try { j = JSON.parse(raw); } catch { return false; }
@@ -153,6 +163,27 @@
             if (connected && dwPaired) { try { sessionStorage.removeItem('dw_autojoin'); } catch {} }
         }, 3000);
         return true;
+    }
+
+    // ---------- درخواست تب جدید از background (chrome.tabs.create) ----------
+    // sessionStorage بین تب‌های تازه مشترک نیست؛ پیش‌از باز کردن تب جدید،
+    // کد/رمز را در localStorage هم ذخیره می‌کنیم تا تب تازه (همان origin)
+    // بتواند از آن بخواند و خودکار وارد اتاق شود.
+    function openInNewTab(url) {
+        try {
+            localStorage.setItem('dw_tabjoin_' + location.origin,
+                JSON.stringify({ code: roomCode, pass: (pendingJoin && pendingJoin.pwd) || '', ts: Date.now() }));
+        } catch {}
+        try {
+            chrome.runtime.sendMessage({ action: 'DW_OPEN_TAB', url }, (res) => {
+                if (chrome.runtime.lastError || !res || !res.ok) {
+                    // fallback: window.open از خود صفحه
+                    try { window.open(url, '_blank'); } catch {}
+                }
+            });
+        } catch {
+            try { window.open(url, '_blank'); } catch {}
+        }
     }
 
     // فعال کردن پنل اکستنشن (main.js) و نمایش بخش دابل‌واچ — فقط روی صفحاتی
@@ -308,6 +339,12 @@
                 toMain({ action: 'DW_STATE', state: 'paired', role: isHost ? 'host' : 'guest' });
                 if (!isHost) send({ type: 'relay', data: { type: 'request-sync' } });
                 break;
+            case 'peer_left':
+                // طرف مقابل خارج شد — وضعیت UI در main.js به 'disconnected' می‌رود
+                dwPaired = false;
+                setStatus('⚠️ دوستت از اتاق خارج شد...', '#ffb86c');
+                toMain({ action: 'DW_STATE', state: 'waiting', role: isHost ? 'host' : 'guest' });
+                break;
             case 'error': {
                 const em = msg.message || msg.reason || 'خطا';
                 setStatus('❌ ' + em, '#ff5555');
@@ -396,7 +433,7 @@
 
     function buildUI() {
         const fresh = !panelEl || !document.body.contains(panelEl);
-        panelEl = document.getElementById('adv-dw-section');
+        panelEl = document.getElementById('adv-dw-body') || document.getElementById('adv-dw-section');
         if (!panelEl) return; // پنل اصلی هنوز ساخته نشده
         if (!fresh) {
             // پنل بازسازی شده — فقط وضعیت اتصال را دوباره در UI نشان بده
@@ -550,7 +587,7 @@
         codeInput.onkeydown = (e) => { if (e.key === 'Enter') goBtn.click(); };
         syncBtn.onclick = () => {
             if (isHost) toMain({ action: 'DW_REQUEST_STATE' });
-            else send({ type: 'ask-state' });
+            else send({ type: 'relay', data: { type: 'request-sync' } });
             flash(syncBtn, '🔄 ارسال شد');
         };
         leaveBtn.onclick = () => {
@@ -625,14 +662,15 @@
     function applyPassword(pwd) {
         const code = sessionStorage.getItem('dw_host_code') || roomCode;
         if (code) sessionStorage.setItem('dw_pass_' + code, pwd);
-        // سرور فعلی تغییر رمز در لحظه را پشتیبانی نمی‌کند؛ اتاق بازسازی می‌شود
+        // سرور فعلی تغییر رمز در لحظه را پشتیبانی نمی‌کند؛ اتاق بازسازی می‌شود.
+        // اگر هنوز مهمان وارد نشده، با همان کد اتاق دوباره ساخته شود تا لینک معتبر بماند.
         if (connected && isHost) {
             const li = document.getElementById('dw-link-input');
-            connect(code, true, pwd);
+            connect(code, true, pwd, dwPaired ? undefined : code);
             if (li) li.value = shareLink(code);
             setStatus('🔁 اتاق با رمز جدید ساخته شد — لینک را دوباره بفرست', '#ffb86c');
         } else {
-            send({ type: 'set-pass', pass: pwd });
+            send({ type: 'relay', data: { type: 'set-pass', pass: pwd } });
         }
     }
 

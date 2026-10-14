@@ -3,7 +3,7 @@
   "name": "Video Unlocker Pro",
   "version": "1.0.0",
   "description": "پنل کنترل پیشرفته ویدیو با قابلیت حذف قفل",
-  "permissions": ["scripting", "activeTab"],
+  "permissions": ["scripting", "activeTab", "tabs"],
   "background": {
     "service_worker": "background.js"
   },

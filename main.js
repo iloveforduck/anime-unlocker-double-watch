@@ -108,6 +108,11 @@
                 dw.role = m.role || null;
                 dw.active = (dw.state !== 'off' && dw.state !== 'disconnected');
                 updateUI();
+                // نوار «تب جدید» فقط وقتی دابل‌واچ فعال است نمایش داده شود
+                {
+                    const tb = document.getElementById('dw-newtab-btn');
+                    if (tb) tb.style.display = dw.active ? 'block' : 'none';
+                }
                 if (dw.state === 'paired' && dw.role === 'host') {
                     // میزبان: ارسال وضعیت اولیه به مهمان تازه‌وارد
                     emitPlayerEvent('state');
@@ -207,6 +212,26 @@
         const sec = document.createElement('div');
         sec.id = 'adv-dw-section';
         sec.style.cssText = `display:none;margin-bottom:14px;padding:10px 12px;background:rgba(189,147,249,0.06);border:1px solid rgba(189,147,249,0.15);border-radius:10px;`;
+
+        // نوار «تب جدید» — فقط در حالت دابل‌واچ دیده می‌شود؛ body پنل توسط
+        // double-watch.js ساخته می‌شود و این دکمه بیرون آن می‌ماند.
+        const tabBtn = document.createElement('button');
+        tabBtn.id = 'dw-newtab-btn';
+        tabBtn.innerHTML = '🗂️ باز کردن صفحهٔ ویدیو در تب جدید';
+        tabBtn.style.cssText = `display:none;width:100%;margin-top:8px;padding:8px 0;border:1px solid rgba(139,233,253,0.35);border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;background:rgba(139,233,253,0.12);color:#8be9fd;transition:all .2s ease;font-family:inherit;`;
+        tabBtn.onmouseover = () => { tabBtn.style.background = '#8be9fd'; tabBtn.style.color = '#1a1a2e'; };
+        tabBtn.onmouseout  = () => { tabBtn.style.background = 'rgba(139,233,253,0.12)'; tabBtn.style.color = '#8be9fd'; };
+        tabBtn.onclick = () => {
+            toExt({ action: 'DW_NEW_TAB' });
+            tabBtn.textContent = '✅ تب جدید باز شد';
+            setTimeout(() => { tabBtn.innerHTML = '🗂️ باز کردن صفحهٔ ویدیو در تب جدید'; }, 2000);
+        };
+
+        const body = document.createElement('div');
+        body.id = 'adv-dw-body';
+
+        sec.appendChild(body);
+        sec.appendChild(tabBtn);
         parent.appendChild(sec);
     }
 
@@ -233,6 +258,29 @@
     }
     document.addEventListener('DW_EXT_MSG', dwPrefillHandler);
     window.addEventListener('DW_EXT_MSG', dwPrefillHandler);
+
+    // ---------- دکمهٔ «تب جدید» در بخش دابل‌واچ ----------
+    // وقتی میزبان این دکمه را می‌زند، double-watch.js از background می‌خواهد
+    // همان صفحهٔ ویدیو را در یک تب تازه باز کند؛ اکستنشن روی آن تب هم اجرا
+    // شده و با کد ذخیره‌شده خودکار وارد اتاق می‌شود.
+    function bindNewTabButton() {
+        const b = document.getElementById('dw-newtab-btn');
+        if (!b || b.__bound) return;
+        b.__bound = true;
+        b.onclick = () => {
+            toExt({ action: 'DW_NEW_TAB' });
+            b.textContent = '✅ تب جدید باز شد';
+            setTimeout(() => { b.innerHTML = '🗂️ باز کردن صفحهٔ ویدیو در تب جدید'; }, 2000);
+        };
+    }
+    document.addEventListener('DW_EXT_MSG', (e) => {
+        if (e.__dwShared && e.currentTarget === window) return;
+        const m = (e && e.detail) || {};
+        if (m.action === 'DW_STATE') {
+            // بعد از هر تغییر وضعیت، نوار تب جدید موجود/روشن شود
+            setTimeout(bindNewTabButton, 50);
+        }
+    });
 
     // ===== تشخیص قفل =====
     function isLocked() {
